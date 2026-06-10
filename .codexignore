@@ -1,0 +1,26 @@
+.git/
+.venv/
+node_modules/
+dist/
+build/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+storage/assets/
+storage/audio/
+storage/captions/
+storage/renders/
+
+*.mp4
+*.mp3
+*.wav
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.log
+
+# Arquivo grande: só ler quando o prompt pedir explicitamente
+shortsfactory_efficiency_v2_2.md

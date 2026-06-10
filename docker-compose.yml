@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: shortsfactory-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shortsfactory
+      POSTGRES_PASSWORD: shortsfactory
+      POSTGRES_DB: shortsfactory
+    ports:
+      - "5432:5432"
+    volumes:
+      - shortsfactory_postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shortsfactory -d shortsfactory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: shortsfactory-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - shortsfactory_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  shortsfactory_postgres_data:
+  shortsfactory_redis_data:
