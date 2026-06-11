@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -134,6 +135,7 @@ class CostLog(TimestampMixin, Base):
     request_id: Mapped[str | None] = mapped_column(String(128))
     model: Mapped[str | None] = mapped_column(String(128))
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD", server_default="USD")
 
     __table_args__ = (

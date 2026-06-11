@@ -136,8 +136,36 @@ python scripts/manual_video_pipeline_http.py --mode real
 O modo `real`:
 
 - nao muda o padrao `fake`
-- falha com erro claro se `OPENAI_API_KEY` nao estiver configurada
-- registra `cost_logs` quando usa provider real no TTS ou no gerador de roteiro
+- falha com erro claro se `LLM_API_KEY` nao estiver configurada para o Script Engine
+- continua exigindo `OPENAI_API_KEY` apenas se voce for seguir para TTS real
+- registra `cost_logs` quando usa provider real no Script Engine
+
+### Configuracao de LLM
+
+Use estas variaveis para o Script Engine:
+
+OpenAI:
+
+```bash
+LLM_PROVIDER=openai
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o-mini
+```
+
+DeepSeek:
+
+```bash
+LLM_PROVIDER=deepseek
+LLM_API_KEY=sk-...
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
+```
+
+Diferença importante:
+
+- `LLM_PROVIDER` e `LLM_API_KEY` controlam apenas texto/JSON do Script Engine
+- `OPENAI_API_KEY` continua sendo usada para TTS
+- DeepSeek cobre geração de texto, nao narração
 
 ## 6. Observacoes
 

@@ -12,9 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.models.core import Channel, CostLog, LLMCache, Script, Video
-from app.models.enums import LifecycleStatus, VideoStageStatus, WorkflowStatus
+from app.models.enums import LifecycleStatus, LLMProvider, VideoExecutionMode, VideoStageStatus, WorkflowStatus
 from app.services.llm_types import LLMResult, LLMUsage
-from app.services.openai_client import OpenAIChatPayload, OpenAIJSONClient
+from app.services.openai_client import OpenAIChatPayload, LLMJSONClient
 
 
 def _slugify(value: str) -> str:
@@ -46,16 +46,46 @@ class ScriptGenerationResult:
     cache_hits: dict[str, bool]
 
 
+class _DeterministicLLMClient:
+    async def generate_json(self, *, payload: OpenAIChatPayload, model: str) -> LLMResult:
+        prompt_lower = payload.system_prompt.lower()
+        if "idea" in prompt_lower:
+            content = {"idea": "Explique uma curiosidade simples em formato curto.", "angle": "curiosidade", "title": "Ideia curta"}
+        elif "hook" in prompt_lower:
+            content = {"hook": "Voce ja percebeu isso em menos de 10 segundos?", "alt_hook": "Isso vai mudar sua forma de ver o tema."}
+        elif "script" in prompt_lower:
+            content = {
+                "title": "Roteiro enxuto",
+                "script": "Abra com a curiosidade, desenvolva em tres pontos e feche com uma frase forte.",
+                "beats": ["hook", "explicacao", "fecho"],
+            }
+        else:
+            content = {
+                "risk_score": 0.23,
+                "decision": "approved",
+                "reasons": ["Tema seguro", "Sem sinais de risco"],
+                "allowed_topics": ["educacao"],
+            }
+
+        return LLMResult(
+            content=content,
+            model=model,
+            request_id="local-fake",
+            usage=None,
+            raw_content=_json_dumps(content),
+        )
+
+
 class ScriptEngineService:
     def __init__(
         self,
         session: AsyncSession,
-        llm_client: OpenAIJSONClient | None = None,
+        llm_client: LLMJSONClient | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.session = session
         self.settings = settings or get_settings()
-        self.llm_client = llm_client or OpenAIJSONClient(self.settings)
+        self.llm_client = llm_client
 
     async def create_test_script(
         self,
@@ -64,14 +94,16 @@ class ScriptEngineService:
         channel_slug: str,
         channel_name: str,
         video_title: str | None = None,
+        execution_mode: VideoExecutionMode = VideoExecutionMode.FAKE,
     ) -> ScriptGenerationResult:
+        llm_client, provider_name, record_cost_logs = self._get_llm_client(execution_mode)
         async with self.session.begin():
             channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name)
 
-            idea = await self._generate_idea(topic=topic)
-            hook = await self._generate_hook(topic=topic, idea=idea)
-            script = await self._generate_script(topic=topic, idea=idea, hook=hook)
-            policy = await self._policy_check(topic=topic, script=script)
+            idea = await self._generate_idea(topic=topic, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
+            hook = await self._generate_hook(topic=topic, idea=idea, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
+            script = await self._generate_script(topic=topic, idea=idea, hook=hook, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
+            policy = await self._policy_check(topic=topic, script=script, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
 
             video_slug = f"{_slugify(topic)}-{uuid4().hex[:8]}"
             video = Video(
@@ -103,7 +135,7 @@ class ScriptEngineService:
                 policy_risk_score=Decimal(str(policy.content["risk_score"])),
                 policy_decision=str(policy.content["decision"]),
                 generation_payload=generated_payload,
-                llm_model=self.settings.openai_llm_model,
+                llm_model=self.settings.llm_model,
                 llm_cache_key=script.content.get("cache_key"),
                 llm_input_hash=script.content.get("input_hash"),
             )
@@ -139,7 +171,22 @@ class ScriptEngineService:
         await self.session.flush()
         return channel
 
-    async def _generate_idea(self, *, topic: str) -> LLMResult:
+    def _get_llm_client(
+        self,
+        execution_mode: VideoExecutionMode,
+    ) -> tuple[LLMJSONClient | _DeterministicLLMClient, str, bool]:
+        if execution_mode == VideoExecutionMode.FAKE:
+            if self.llm_client is not None:
+                return self.llm_client, self.settings.llm_provider.value, True
+            return _DeterministicLLMClient(), "local", False
+
+        if self.settings.llm_provider not in {LLMProvider.OPENAI, LLMProvider.DEEPSEEK}:
+            raise ValueError(f"Unknown LLM provider: {self.settings.llm_provider}")
+        if not self.settings.llm_api_key:
+            raise ValueError("LLM_API_KEY is required for real LLM execution")
+        return LLMJSONClient(self.settings), self.settings.llm_provider.value, True
+
+    async def _generate_idea(self, *, topic: str, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
         return await self._generate_operation(
             operation="idea",
             topic=topic,
@@ -147,9 +194,12 @@ class ScriptEngineService:
             system_prompt="You generate one concise video idea in JSON.",
             user_prompt=f'Create one short video idea about "{topic}". Return JSON with keys idea, angle, title.',
             max_tokens=self.settings.openai_idea_max_tokens,
+            llm_client=llm_client,
+            provider_name=provider_name,
+            record_cost_logs=record_cost_logs,
         )
 
-    async def _generate_hook(self, *, topic: str, idea: LLMResult) -> LLMResult:
+    async def _generate_hook(self, *, topic: str, idea: LLMResult, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
         idea_text = str(idea.content.get("idea") or "")
         return await self._generate_operation(
             operation="hook",
@@ -161,9 +211,12 @@ class ScriptEngineService:
                 "Return JSON with keys hook and alt_hook."
             ),
             max_tokens=self.settings.openai_hook_max_tokens,
+            llm_client=llm_client,
+            provider_name=provider_name,
+            record_cost_logs=record_cost_logs,
         )
 
-    async def _generate_script(self, *, topic: str, idea: LLMResult, hook: LLMResult) -> LLMResult:
+    async def _generate_script(self, *, topic: str, idea: LLMResult, hook: LLMResult, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
         idea_text = str(idea.content.get("idea") or "")
         hook_text = str(hook.content.get("hook") or "")
         return await self._generate_operation(
@@ -177,9 +230,12 @@ class ScriptEngineService:
                 "Return JSON with keys title, script, beats."
             ),
             max_tokens=self.settings.openai_script_max_tokens,
+            llm_client=llm_client,
+            provider_name=provider_name,
+            record_cost_logs=record_cost_logs,
         )
 
-    async def _policy_check(self, *, topic: str, script: LLMResult) -> LLMResult:
+    async def _policy_check(self, *, topic: str, script: LLMResult, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
         script_text = str(script.content.get("script") or "")
         return await self._generate_operation(
             operation="policy",
@@ -191,6 +247,9 @@ class ScriptEngineService:
                 "Return JSON with keys risk_score, reasons, allowed_topics."
             ),
             max_tokens=self.settings.openai_policy_max_tokens,
+            llm_client=llm_client,
+            provider_name=provider_name,
+            record_cost_logs=record_cost_logs,
         )
 
     async def _generate_operation(
@@ -202,8 +261,11 @@ class ScriptEngineService:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
+        llm_client: LLMJSONClient | _DeterministicLLMClient,
+        provider_name: str,
+        record_cost_logs: bool,
     ) -> LLMResult:
-        model = self.settings.openai_llm_model
+        model = self.settings.llm_model
         prompt_blob = _json_dumps(
             {
                 "operation": operation,
@@ -213,11 +275,14 @@ class ScriptEngineService:
                 "user_prompt": user_prompt,
                 "max_tokens": max_tokens,
                 "model": model,
+                "provider": provider_name,
             }
         )
         content_hash = _hash_content(prompt_blob)
 
-        cached = await self.session.scalar(select(LLMCache).where(LLMCache.content_hash == content_hash))
+        cached = await self.session.scalar(
+            select(LLMCache).where(LLMCache.content_hash == content_hash, LLMCache.provider == provider_name)
+        )
         if cached is not None:
             content = cached.response_json if cached.response_json is not None else {}
             enriched_content = dict(content)
@@ -232,7 +297,7 @@ class ScriptEngineService:
                 raw_content=cached.response_text or _json_dumps(content),
             )
 
-        result = await self.llm_client.generate_json(
+        result = await llm_client.generate_json(
             payload=OpenAIChatPayload(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -241,27 +306,35 @@ class ScriptEngineService:
             model=model,
         )
         cache_key = f"{operation}:{content_hash}"
+        response_text = result.raw_content or _json_dumps(result.content)
+        is_estimated = result.usage is None
+        if is_estimated:
+            cost_usd = _estimate_cost_from_texts(system_prompt, user_prompt, response_text, self.settings)
+        else:
+            cost_usd = _estimate_cost(result.usage.prompt_tokens, result.usage.completion_tokens, self.settings)
 
         cache_row = LLMCache(
             content_hash=content_hash,
             cache_key=cache_key,
-            provider="openai",
+            provider=provider_name,
             model=result.model,
             prompt_hash=_hash_content(system_prompt, user_prompt),
-            response_text=result.raw_content,
+            response_text=response_text,
             response_json=result.content,
         )
         self.session.add(cache_row)
-        self.session.add(
-            CostLog(
-                video_id=None,
-                provider="openai",
-                operation=operation,
-                request_id=result.request_id,
-                model=result.model,
-                cost_usd=_estimate_cost(result.usage.prompt_tokens, result.usage.completion_tokens, self.settings),
+        if record_cost_logs:
+            self.session.add(
+                CostLog(
+                    video_id=None,
+                    provider=provider_name,
+                    operation=operation,
+                    request_id=result.request_id,
+                    model=result.model,
+                    cost_usd=cost_usd,
+                    estimated=is_estimated,
+                )
             )
-        )
         await self.session.flush()
 
         enriched_content = dict(result.content)
@@ -273,7 +346,7 @@ class ScriptEngineService:
             model=result.model,
             request_id=result.request_id,
             usage=result.usage,
-            raw_content=result.raw_content,
+            raw_content=response_text,
         )
 
 
@@ -283,6 +356,16 @@ def _estimate_cost(prompt_tokens: int, completion_tokens: int, settings: Setting
         + (completion_tokens / 1_000_000) * settings.openai_output_cost_per_1m_tokens_usd
     )
     return Decimal(str(round(cost, 6)))
+
+
+def _estimate_cost_from_texts(system_prompt: str, user_prompt: str, response_text: str, settings: Settings) -> Decimal:
+    prompt_tokens = _estimate_tokens(system_prompt + "\n" + user_prompt)
+    completion_tokens = _estimate_tokens(response_text)
+    return _estimate_cost(prompt_tokens, completion_tokens, settings)
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
 
 
 def _build_policy_notes(policy: dict[str, object]) -> str | None:

@@ -15,7 +15,6 @@ from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStat
 from app.services.asset_pool_service import AssetPoolService
 from app.services.caption_worker import CaptionWorker
 from app.services.media_utils import build_deterministic_mp3_bytes
-from app.services.openai_client import OpenAIJSONClient
 from app.services.render_worker import RenderWorker
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
@@ -215,14 +214,13 @@ class VideoProductionService:
         channel_name: str,
         video_title: str | None,
     ) -> VideoPipelineState:
-        if not self.settings.openai_api_key:
-            raise ValueError("Real execution mode requires OPENAI_API_KEY")
-        service = ScriptEngineService(session=self.session, settings=self.settings, llm_client=OpenAIJSONClient(self.settings))
+        service = ScriptEngineService(session=self.session, settings=self.settings)
         result = await service.create_test_script(
             topic=topic,
             channel_slug=channel_slug,
             channel_name=channel_name,
             video_title=video_title,
+            execution_mode=VideoExecutionMode.REAL,
         )
         video = await self.session.get(Video, result.video_id)
         if video is None:

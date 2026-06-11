@@ -8,10 +8,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.api.deps import get_script_engine_service
+from app.core.config import Settings
 from app.main import app
 from app.models.core import Channel, CostLog, LLMCache, Script, Video
+from app.models.enums import LLMProvider, VideoExecutionMode
 from app.schemas.script_engine import ScriptEngineTestResponse
 from app.services.llm_types import LLMResult, LLMUsage
+from app.services.openai_client import LLMJSONClient
 from app.services.script_engine import ScriptEngineService, ScriptGenerationResult
 
 
@@ -62,6 +65,53 @@ class FakeScriptEngineService:
             policy_risk_score=Decimal("0.2300"),
             cache_hits={"idea": True, "hook": True, "script": True, "policy": True},
         )
+
+
+@dataclass
+class FakeLLMMessage:
+    content: str | None
+
+
+@dataclass
+class FakeLLMChoice:
+    message: FakeLLMMessage
+
+
+@dataclass
+class FakeLLMUsageData:
+    prompt_tokens: int
+    completion_tokens: int
+
+
+class FakeAsyncOpenAI:
+    last_init_kwargs: dict[str, str | None] | None = None
+    last_chat_kwargs: dict[str, object] | None = None
+    response_usage: FakeLLMUsageData | None = None
+    response_model: str = "deepseek-chat"
+    response_request_id: str = "req-deepseek"
+    response_content: str = '{"risk_score": 0.19, "decision": "approved", "reasons": ["ok"], "allowed_topics": ["educacao"]}'
+
+    def __init__(self, **kwargs: object) -> None:
+        FakeAsyncOpenAI.last_init_kwargs = {"api_key": kwargs.get("api_key"), "base_url": kwargs.get("base_url")}
+        self.chat = self._Chat()
+
+    class _Chat:
+        def __init__(self) -> None:
+            self.completions = self._Completions()
+
+        class _Completions:
+            async def create(self, **kwargs: object):
+                FakeAsyncOpenAI.last_chat_kwargs = kwargs
+                return type(
+                    "FakeResponse",
+                    (),
+                    {
+                        "choices": [FakeLLMChoice(message=FakeLLMMessage(content=FakeAsyncOpenAI.response_content))],
+                        "model": FakeAsyncOpenAI.response_model,
+                        "id": FakeAsyncOpenAI.response_request_id,
+                        "usage": FakeAsyncOpenAI.response_usage,
+                    },
+                )()
 
 
 @pytest.mark.asyncio
@@ -126,3 +176,107 @@ def test_internal_script_route_returns_response() -> None:
     body = ScriptEngineTestResponse.model_validate(response.json())
     assert body.script_status == "approved"
     assert body.cache_hits == {"idea": True, "hook": True, "script": True, "policy": True}
+
+
+@pytest.mark.asyncio
+async def test_fake_script_engine_does_not_instantiate_provider(db_session, monkeypatch) -> None:
+    def _fail_init(*args, **kwargs):  # noqa: ANN001, ANN003
+        raise AssertionError("LLMJSONClient should not be instantiated in fake mode")
+
+    monkeypatch.setattr(LLMJSONClient, "__init__", _fail_init)
+
+    service = ScriptEngineService(session=db_session)
+    result = await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="test-channel",
+        channel_name="Test Channel",
+        video_title="Teste 1",
+    )
+
+    assert result.script_status == "approved"
+    cost_log_count = await db_session.scalar(select(func.count()).select_from(CostLog))
+    assert cost_log_count == 0
+
+
+@pytest.mark.asyncio
+async def test_real_script_engine_without_api_key_fails_clear(db_session) -> None:
+    service = ScriptEngineService(session=db_session, settings=Settings(llm_provider=LLMProvider.OPENAI))
+
+    with pytest.raises(ValueError, match="LLM_API_KEY"):
+        await service.create_test_script(
+            topic="Como aprender Python",
+            channel_slug="test-channel",
+            channel_name="Test Channel",
+            video_title="Teste 1",
+            execution_mode=VideoExecutionMode.REAL,
+        )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_provider_uses_config_and_logs_costs(db_session, monkeypatch) -> None:
+    monkeypatch.setattr("app.services.openai_client.AsyncOpenAI", FakeAsyncOpenAI)
+    FakeAsyncOpenAI.last_init_kwargs = None
+    FakeAsyncOpenAI.last_chat_kwargs = None
+    FakeAsyncOpenAI.response_usage = FakeLLMUsageData(prompt_tokens=12, completion_tokens=34)
+    FakeAsyncOpenAI.response_model = "deepseek-chat"
+
+    settings = Settings(
+        llm_provider=LLMProvider.DEEPSEEK,
+        llm_api_key="sk-deepseek",
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_model="deepseek-chat",
+    )
+    service = ScriptEngineService(session=db_session, settings=settings)
+
+    result = await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="deepseek-test",
+        channel_name="DeepSeek Test",
+        video_title="Teste DeepSeek",
+        execution_mode=VideoExecutionMode.REAL,
+    )
+
+    assert result.script_status == "approved"
+    assert FakeAsyncOpenAI.last_init_kwargs == {
+        "api_key": "sk-deepseek",
+        "base_url": "https://api.deepseek.com/v1",
+    }
+    assert FakeAsyncOpenAI.last_chat_kwargs is not None
+    assert FakeAsyncOpenAI.last_chat_kwargs["model"] == "deepseek-chat"
+
+    cost_log = await db_session.scalar(select(CostLog).order_by(CostLog.id.desc()))
+    assert cost_log is not None
+    assert cost_log.provider == "deepseek"
+    assert cost_log.model == "deepseek-chat"
+    assert cost_log.estimated is False
+
+
+@pytest.mark.asyncio
+async def test_real_script_engine_marks_estimated_cost_when_usage_missing(db_session, monkeypatch) -> None:
+    monkeypatch.setattr("app.services.openai_client.AsyncOpenAI", FakeAsyncOpenAI)
+    FakeAsyncOpenAI.last_init_kwargs = None
+    FakeAsyncOpenAI.last_chat_kwargs = None
+    FakeAsyncOpenAI.response_usage = None
+    FakeAsyncOpenAI.response_model = "deepseek-chat"
+
+    settings = Settings(
+        llm_provider=LLMProvider.DEEPSEEK,
+        llm_api_key="sk-deepseek",
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_model="deepseek-chat",
+    )
+    service = ScriptEngineService(session=db_session, settings=settings)
+
+    await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="deepseek-estimated-test",
+        channel_name="DeepSeek Estimated Test",
+        video_title="Teste DeepSeek Estimated",
+        execution_mode=VideoExecutionMode.REAL,
+    )
+
+    cost_log = await db_session.scalar(select(CostLog).order_by(CostLog.id.desc()))
+    assert cost_log is not None
+    assert cost_log.provider == "deepseek"
+    assert cost_log.model == "deepseek-chat"
+    assert cost_log.estimated is True

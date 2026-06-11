@@ -4,12 +4,15 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from app.models.enums import VideoExecutionMode
+
 
 class ScriptEngineTestRequest(BaseModel):
     topic: str = Field(min_length=3, max_length=255)
     channel_slug: str = Field(default="internal-test", min_length=3, max_length=160)
     channel_name: str = Field(default="Internal Test", min_length=3, max_length=255)
     video_title: str | None = Field(default=None, max_length=255)
+    execution_mode: VideoExecutionMode = Field(default=VideoExecutionMode.FAKE)
 
 
 class ScriptEngineTestResponse(BaseModel):

@@ -330,7 +330,7 @@ async def test_real_pipeline_without_api_key_fails_clear(db_session, tmp_path) -
     )
     service = VideoProductionService(session=db_session, settings=settings)
 
-    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+    with pytest.raises(ValueError, match="LLM_API_KEY"):
         await service.create_local_test_video(
             topic="Como aprender Python",
             channel_slug="real-mode-test",

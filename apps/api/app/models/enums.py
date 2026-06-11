@@ -17,6 +17,11 @@ class WorkflowStatus(str, Enum):
     COMPLETED = "completed"
 
 
+class LLMProvider(str, Enum):
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+
+
 class VideoStageStatus(str, Enum):
     DRAFT = "draft"
     SCRIPT_APPROVED = "script_approved"

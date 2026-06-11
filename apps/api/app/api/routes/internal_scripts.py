@@ -19,5 +19,6 @@ async def create_test_script(
         channel_slug=payload.channel_slug,
         channel_name=payload.channel_name,
         video_title=payload.video_title,
+        execution_mode=payload.execution_mode,
     )
     return ScriptEngineTestResponse.model_validate(asdict(result))

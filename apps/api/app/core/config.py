@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.models.enums import LLMProvider
+
 
 class Settings(BaseSettings):
     app_env: str = "development"
@@ -11,6 +13,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://shortsfactory:shortsfactory@localhost:5433/shortsfactory"
     redis_url: str = "redis://localhost:6379/0"
+    llm_provider: LLMProvider = LLMProvider.OPENAI
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str = "gpt-4o-mini"
     openai_api_key: str | None = None
     openai_llm_model: str = "gpt-4o-mini"
     openai_tts_model: str = "tts-1"

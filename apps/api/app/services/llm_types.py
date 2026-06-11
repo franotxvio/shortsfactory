@@ -15,7 +15,7 @@ class LLMResult:
     content: dict[str, object]
     model: str
     request_id: str | None
-    usage: LLMUsage
+    usage: LLMUsage | None
     raw_content: str
 
 
