@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -28,6 +29,11 @@ class VideoProductionResult:
     preview_path: str
     final_path: str
     asset_path: str
+    hook: str | None = None
+    body_blocks: list[str] | None = None
+    call_to_action: str | None = None
+    estimated_duration_seconds: int | None = None
+    style_tone: str | None = None
 
 
 @dataclass(slots=True)
@@ -45,6 +51,11 @@ class VideoPipelineState:
     final_path: str | None = None
     asset_path: str | None = None
     preview_approved_at: datetime | None = None
+    hook: str | None = None
+    body_blocks: list[str] | None = None
+    call_to_action: str | None = None
+    estimated_duration_seconds: int | None = None
+    style_tone: str | None = None
 
 
 class _DeterministicTTSClient:
@@ -112,13 +123,18 @@ class VideoProductionService:
         videos = (await self.session.scalars(statement)).all()
         states: list[VideoPipelineState] = []
         for video in videos:
-            script_id, script_status = await self._get_latest_script_metadata(video_id=video.id)
+            script_metadata = await self._get_latest_script_metadata(video_id=video.id)
             states.append(
                 self._build_state(
                     video,
-                    script_id=script_id,
-                    script_status=script_status,
+                    script_id=script_metadata["script_id"],
+                    script_status=script_metadata["script_status"],
                     asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+                    hook=script_metadata["hook"],
+                    body_blocks=script_metadata["body_blocks"],
+                    call_to_action=script_metadata["call_to_action"],
+                    estimated_duration_seconds=script_metadata["estimated_duration_seconds"],
+                    style_tone=script_metadata["style_tone"],
                 )
             )
         return states
@@ -178,12 +194,17 @@ class VideoProductionService:
         video = await self.session.scalar(statement)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
-        script_id, script_status = await self._get_latest_script_metadata(video_id=video_id)
+        script_metadata = await self._get_latest_script_metadata(video_id=video_id)
         return self._build_state(
             video,
-            script_id=script_id,
-            script_status=script_status,
+            script_id=script_metadata["script_id"],
+            script_status=script_metadata["script_status"],
             asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+            hook=script_metadata["hook"],
+            body_blocks=script_metadata["body_blocks"],
+            call_to_action=script_metadata["call_to_action"],
+            estimated_duration_seconds=script_metadata["estimated_duration_seconds"],
+            style_tone=script_metadata["style_tone"],
         )
 
     async def _create_fake_test_video(
@@ -207,15 +228,15 @@ class VideoProductionService:
             self.session.add(video)
             await self.session.flush()
 
-            script_content = self._build_fake_script(topic=topic)
+            script_content = self._build_fake_script_payload(topic=topic)
             script = Script(
                 video_id=video.id,
                 topic=topic,
                 version=1,
                 status=WorkflowStatus.APPROVED,
                 idea=f"Explique {topic} de forma simples.",
-                hook=f"Voce ja ouviu isso sobre {topic}?",
-                content=script_content,
+                hook=script_content["hook"],
+                content=script_content["script"],
                 notes="Script local deterministico para fluxo manual.",
                 policy_risk_score=Decimal("0.0500"),
                 policy_decision="approved",
@@ -225,6 +246,7 @@ class VideoProductionService:
                     "channel_slug": channel_slug,
                     "channel_name": channel_name,
                     "video_title": video_title,
+                    "script": script_content,
                 },
                 llm_model="local-fake",
                 llm_cache_key=None,
@@ -233,7 +255,17 @@ class VideoProductionService:
             self.session.add(script)
             await self.session.flush()
 
-            state = self._build_state(video, script_id=script.id, script_status=script.status.value, asset_path=None)
+            state = self._build_state(
+                video,
+                script_id=script.id,
+                script_status=script.status.value,
+                asset_path=None,
+                hook=script_content["hook"],
+                body_blocks=script_content["body_blocks"],
+                call_to_action=script_content["call_to_action"],
+                estimated_duration_seconds=script_content["estimated_duration_seconds"],
+                style_tone=script_content["style_tone"],
+            )
         return state
 
     async def _create_real_test_video(
@@ -255,7 +287,17 @@ class VideoProductionService:
         video = await self.session.get(Video, result.video_id)
         if video is None:
             raise ValueError(f"Video {result.video_id} not found")
-        return self._build_state(video, script_id=result.script_id, script_status=result.script_status, asset_path=None)
+        return self._build_state(
+            video,
+            script_id=result.script_id,
+            script_status=result.script_status,
+            asset_path=None,
+            hook=result.hook,
+            body_blocks=result.body_blocks,
+            call_to_action=result.call_to_action,
+            estimated_duration_seconds=result.estimated_duration_seconds,
+            style_tone=result.style_tone,
+        )
 
     async def _get_or_create_channel(self, *, channel_slug: str, channel_name: str) -> Channel:
         statement = select(Channel).where(Channel.slug == channel_slug)
@@ -288,6 +330,11 @@ class VideoProductionService:
         script_id: int | None = None,
         script_status: str | None = None,
         asset_path: str | None = None,
+        hook: str | None = None,
+        body_blocks: list[str] | None = None,
+        call_to_action: str | None = None,
+        estimated_duration_seconds: int | None = None,
+        style_tone: str | None = None,
     ) -> VideoPipelineState:
         return VideoPipelineState(
             video_id=video.id,
@@ -303,6 +350,11 @@ class VideoProductionService:
             final_path=video.final_path,
             asset_path=asset_path,
             preview_approved_at=video.preview_approved_at,
+            hook=hook,
+            body_blocks=body_blocks,
+            call_to_action=call_to_action,
+            estimated_duration_seconds=estimated_duration_seconds,
+            style_tone=style_tone,
         )
 
     def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
@@ -313,6 +365,11 @@ class VideoProductionService:
             preview_path=state.preview_path or "",
             final_path=state.final_path or "",
             asset_path=state.asset_path or "",
+            hook=state.hook,
+            body_blocks=state.body_blocks,
+            call_to_action=state.call_to_action,
+            estimated_duration_seconds=state.estimated_duration_seconds,
+            style_tone=state.style_tone,
         )
 
     def _build_fake_script(self, *, topic: str) -> str:
@@ -321,12 +378,76 @@ class VideoProductionService:
             "Depois explique em tres pontos curtos e termine com uma chamada direta para a audiencia."
         )
 
-    async def _get_latest_script_metadata(self, *, video_id: int) -> tuple[int | None, str | None]:
+    def _build_fake_script_payload(self, *, topic: str) -> dict[str, object]:
+        topic_text = topic.strip() or "o tema"
+        hook = f"Voce ja viu {topic_text} por este angulo?"
+        body_count = 3 + int(hashlib.sha256(topic_text.encode("utf-8")).hexdigest()[:2], 16) % 3
+        body_templates = [
+            f"Primeiro, simplifique {topic_text} em uma ideia central que a audiencia entenda sem esforco.",
+            "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
+            "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
+            f"Se precisar de mais contexto, conecte {topic_text} a um exemplo simples do dia a dia.",
+            "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
+        ]
+        body_blocks = body_templates[:body_count]
+        call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+        estimated_duration_seconds = 24 + len(body_blocks) * 6
+        script_text = "\n\n".join([hook, *body_blocks, call_to_action])
+        return {
+            "title": f"Roteiro curto: {topic_text}",
+            "hook": hook,
+            "body_blocks": body_blocks,
+            "call_to_action": call_to_action,
+            "estimated_duration_seconds": estimated_duration_seconds,
+            "style_tone": "didatico e direto",
+            "script": script_text,
+            "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
+        }
+
+    async def _get_latest_script_metadata(self, *, video_id: int) -> dict[str, int | str | list[str] | None]:
         statement = select(Script).where(Script.video_id == video_id).order_by(Script.version.desc())
         script = await self.session.scalar(statement)
         if script is None:
-            return None, None
-        return script.id, script.status.value
+            return {
+                "script_id": None,
+                "script_status": None,
+                "hook": None,
+                "body_blocks": None,
+                "call_to_action": None,
+                "estimated_duration_seconds": None,
+                "style_tone": None,
+            }
+
+        generation_payload = script.generation_payload if isinstance(script.generation_payload, dict) else {}
+        script_payload = generation_payload.get("script") if isinstance(generation_payload.get("script"), dict) else {}
+        hook = str(script_payload.get("hook") or script.hook or "").strip() or None
+        body_blocks = self._coerce_string_list(script_payload.get("body_blocks"))
+        call_to_action = str(script_payload.get("call_to_action") or "").strip() or None
+        estimated_duration_seconds = script_payload.get("estimated_duration_seconds")
+        if not isinstance(estimated_duration_seconds, int) or estimated_duration_seconds <= 0:
+            estimated_duration_seconds = None
+        style_tone = str(script_payload.get("style_tone") or "").strip() or None
+        if not body_blocks and script.content:
+            body_blocks = [part.strip() for part in script.content.split("\n\n") if part.strip()][1:-1]
+        return {
+            "script_id": script.id,
+            "script_status": script.status.value,
+            "hook": hook,
+            "body_blocks": body_blocks or None,
+            "call_to_action": call_to_action,
+            "estimated_duration_seconds": estimated_duration_seconds,
+            "style_tone": style_tone,
+        }
+
+    def _coerce_string_list(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        items: list[str] = []
+        for entry in value:
+            text = str(entry).strip()
+            if text:
+                items.append(text)
+        return items
 
     def _slugify(self, value: str) -> str:
         import re

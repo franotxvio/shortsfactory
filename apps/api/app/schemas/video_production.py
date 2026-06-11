@@ -22,6 +22,11 @@ class VideoProductionResponse(BaseModel):
     status: str | None = None
     stage_status: str | None = None
     is_demo: bool = False
+    hook: str | None = None
+    body_blocks: list[str] | None = None
+    call_to_action: str | None = None
+    estimated_duration_seconds: int | None = None
+    style_tone: str | None = None
 
 
 class VideoCreateRequest(BaseModel):
@@ -51,6 +56,11 @@ class VideoPipelineResponse(BaseModel):
     asset_path: str | None = None
     preview_approved_at: datetime | None = None
     is_demo: bool = False
+    hook: str | None = None
+    body_blocks: list[str] | None = None
+    call_to_action: str | None = None
+    estimated_duration_seconds: int | None = None
+    style_tone: str | None = None
 
 
 class VideoListResponse(BaseModel):

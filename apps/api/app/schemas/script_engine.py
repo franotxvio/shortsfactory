@@ -24,3 +24,9 @@ class ScriptEngineTestResponse(BaseModel):
     policy_decision: str
     policy_risk_score: Decimal
     cache_hits: dict[str, bool]
+    hook: str | None = None
+    body_blocks: list[str] | None = None
+    call_to_action: str | None = None
+    estimated_duration_seconds: int | None = None
+    style_tone: str | None = None
+    script_text: str | None = None

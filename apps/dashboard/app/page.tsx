@@ -17,6 +17,11 @@ type VideoItem = {
   final_path?: string | null;
   asset_path?: string | null;
   preview_approved_at?: string | null;
+  hook?: string | null;
+  body_blocks?: string[] | null;
+  call_to_action?: string | null;
+  estimated_duration_seconds?: number | null;
+  style_tone?: string | null;
 };
 
 type VideoListResponse = {
@@ -389,6 +394,36 @@ export default function DashboardPage() {
               <p>
                 <strong>Script:</strong> {selectedVideo.script_id ?? "pendente"} / {selectedVideo.script_status ?? "pendente"}
               </p>
+              {selectedVideo.hook ? (
+                <p>
+                  <strong>Hook:</strong> {selectedVideo.hook}
+                </p>
+              ) : null}
+              {selectedVideo.body_blocks?.length ? (
+                <div className="detail-blocks">
+                  <strong>Body:</strong>
+                  <ul>
+                    {selectedVideo.body_blocks.map((block, index) => (
+                      <li key={`${selectedVideo.video_id}-block-${index}`}>{block}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {selectedVideo.call_to_action ? (
+                <p>
+                  <strong>CTA:</strong> {selectedVideo.call_to_action}
+                </p>
+              ) : null}
+              {selectedVideo.estimated_duration_seconds ? (
+                <p>
+                  <strong>Duracao estimada:</strong> {selectedVideo.estimated_duration_seconds}s
+                </p>
+              ) : null}
+              {selectedVideo.style_tone ? (
+                <p>
+                  <strong>Tom:</strong> {selectedVideo.style_tone}
+                </p>
+              ) : null}
               <p>
                 <strong>Asset:</strong> {selectedVideo.asset_id ?? "pendente"}
               </p>

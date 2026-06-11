@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass
 from decimal import Decimal
@@ -35,14 +36,33 @@ class FakeOpenAIJSONClient:
         lower_prompt = payload.system_prompt.lower()
 
         if "idea" in lower_prompt:
-            content = {"idea": "Explique uma curiosidade simples em formato curto.", "angle": "curiosidade", "title": "Ideia curta"}
+            content = {
+                "idea": "Explique uma curiosidade simples em formato curto.",
+                "angle": "curiosidade",
+                "title": "Ideia curta",
+            }
         elif "hook" in lower_prompt:
-            content = {"hook": "Voce ja percebeu isso em menos de 10 segundos?", "alt_hook": "Isso vai mudar sua forma de ver o tema."}
+            content = {
+                "hook": "Voce ja percebeu isso em menos de 10 segundos?",
+                "alt_hook": "Isso vai mudar sua forma de ver o tema.",
+            }
         elif "script" in lower_prompt:
+            hook = "Voce ja viu esse tema por este angulo?"
+            body_blocks = [
+                "Primeiro, simplifique a ideia central para ganhar atencao rapido.",
+                "Depois, mostre um exemplo curto para deixar o assunto pratico.",
+                "Em seguida, destaque o ganho direto para manter o ritmo.",
+            ]
+            call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem."
             content = {
                 "title": "Roteiro enxuto",
-                "script": "Abra com a curiosidade, desenvolva em tres pontos e feche com uma frase forte.",
-                "beats": ["hook", "explicacao", "fecho"],
+                "hook": hook,
+                "body_blocks": body_blocks,
+                "call_to_action": call_to_action,
+                "estimated_duration_seconds": 36,
+                "style_tone": "didatico e direto",
+                "script": "\n\n".join([hook, *body_blocks, call_to_action]),
+                "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
             }
         else:
             content = {
@@ -57,7 +77,7 @@ class FakeOpenAIJSONClient:
             model=model,
             request_id="req_test",
             usage=LLMUsage(prompt_tokens=10, completion_tokens=20),
-            raw_content='{"ok": true}',
+            raw_content=json.dumps(content),
         )
 
 
@@ -214,6 +234,9 @@ async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_da
             created = VideoPipelineResponse.model_validate(create_response.json())
             assert created.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
             assert created.script_id is not None
+            assert created.hook is not None
+            assert created.call_to_action is not None
+            assert created.estimated_duration_seconds is not None
 
             video_id = created.video_id
 
@@ -252,6 +275,8 @@ async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_da
             final_state = VideoPipelineResponse.model_validate(final_response.json())
             assert final_state.stage_status == VideoStageStatus.FINAL_RENDERED.value
             assert Path(final_state.final_path or "").exists()
+            assert final_state.hook == created.hook
+            assert final_state.call_to_action == created.call_to_action
 
             status_response = client.get(f"/internal/videos/{video_id}/status")
             assert status_response.status_code == 200
@@ -261,6 +286,8 @@ async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_da
             assert status_state.caption_path == captions_state.caption_path
             assert status_state.preview_path == preview_state.preview_path
             assert status_state.final_path == final_state.final_path
+            assert status_state.hook == created.hook
+            assert status_state.call_to_action == created.call_to_action
     finally:
         app.dependency_overrides.clear()
 
@@ -325,6 +352,9 @@ async def test_internal_video_list_returns_recent_items(db_session, temp_databas
     assert item.asset_path is not None
     assert item.preview_path is not None
     assert item.final_path is not None
+    assert item.hook is not None
+    assert item.call_to_action is not None
+    assert item.estimated_duration_seconds is not None
     assert item.is_demo is True
 
 

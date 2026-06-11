@@ -34,6 +34,84 @@ def _hash_content(*parts: str) -> str:
     return digest.hexdigest()
 
 
+def _coerce_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for entry in value:
+        text = str(entry).strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _default_body_blocks(topic: str) -> list[str]:
+    topic_text = topic.strip() or "o tema"
+    return [
+        f"Primeiro, simplifique {topic_text} em uma ideia central que a pessoa entenda sem esforço.",
+        "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
+        "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
+        f"Se quiser dar mais profundidade, conecte {topic_text} a um exemplo simples do dia a dia.",
+        "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
+    ]
+
+
+def _build_consolidated_script_text(hook: str, body_blocks: list[str], call_to_action: str) -> str:
+    parts = [part.strip() for part in [hook, *body_blocks, call_to_action] if part.strip()]
+    return "\n\n".join(parts)
+
+
+def _normalize_script_payload(
+    payload: dict[str, object],
+    *,
+    topic: str,
+    hook_text: str,
+) -> dict[str, object]:
+    title = str(payload.get("title") or f"Roteiro curto: {topic}").strip()
+    hook = str(payload.get("hook") or hook_text or f"Voce ja viu {topic} por este angulo?").strip()
+    body_blocks = _coerce_string_list(payload.get("body_blocks"))
+    if not body_blocks:
+        script_text = str(payload.get("script") or "").strip()
+        if script_text:
+            split_blocks = [part.strip() for part in re.split(r"(?<=[.!?])\s+", script_text) if part.strip()]
+            body_blocks = split_blocks[:5]
+    if len(body_blocks) < 3:
+        defaults = _default_body_blocks(topic)
+        body_blocks.extend(defaults[len(body_blocks) : 3])
+    body_blocks = body_blocks[:5]
+
+    call_to_action = str(
+        payload.get("call_to_action")
+        or payload.get("cta")
+        or "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+    ).strip()
+    style_tone = str(payload.get("style_tone") or payload.get("tone") or "didatico e direto").strip()
+    estimated_duration_raw = payload.get("estimated_duration_seconds")
+    if isinstance(estimated_duration_raw, int) and estimated_duration_raw > 0:
+        estimated_duration_seconds = estimated_duration_raw
+    else:
+        estimated_duration_seconds = max(18, 12 + len(body_blocks) * 6)
+
+    script_text = str(payload.get("script") or "").strip()
+    if not script_text:
+        script_text = _build_consolidated_script_text(hook, body_blocks, call_to_action)
+
+    beats = _coerce_string_list(payload.get("beats"))
+    if not beats:
+        beats = ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))], "cta"]
+
+    return {
+        "title": title,
+        "hook": hook,
+        "body_blocks": body_blocks,
+        "call_to_action": call_to_action,
+        "estimated_duration_seconds": estimated_duration_seconds,
+        "style_tone": style_tone,
+        "script": script_text,
+        "beats": beats,
+    }
+
+
 @dataclass(slots=True)
 class ScriptGenerationResult:
     channel_id: int
@@ -44,20 +122,51 @@ class ScriptGenerationResult:
     policy_decision: str
     policy_risk_score: Decimal
     cache_hits: dict[str, bool]
+    hook: str | None = None
+    body_blocks: list[str] | None = None
+    call_to_action: str | None = None
+    estimated_duration_seconds: int | None = None
+    style_tone: str | None = None
+    script_text: str | None = None
 
 
 class _DeterministicLLMClient:
     async def generate_json(self, *, payload: OpenAIChatPayload, model: str) -> LLMResult:
         prompt_lower = payload.system_prompt.lower()
         if "idea" in prompt_lower:
-            content = {"idea": "Explique uma curiosidade simples em formato curto.", "angle": "curiosidade", "title": "Ideia curta"}
-        elif "hook" in prompt_lower:
-            content = {"hook": "Voce ja percebeu isso em menos de 10 segundos?", "alt_hook": "Isso vai mudar sua forma de ver o tema."}
-        elif "script" in prompt_lower:
             content = {
-                "title": "Roteiro enxuto",
-                "script": "Abra com a curiosidade, desenvolva em tres pontos e feche com uma frase forte.",
-                "beats": ["hook", "explicacao", "fecho"],
+                "idea": "Explique uma curiosidade simples em formato curto.",
+                "angle": "curiosidade",
+                "title": "Ideia curta",
+            }
+        elif "hook" in prompt_lower:
+            content = {
+                "hook": "Voce ja percebeu isso em menos de 10 segundos?",
+                "alt_hook": "Isso vai mudar sua forma de ver o tema.",
+            }
+        elif "script" in prompt_lower:
+            topic_match = re.search(r'about "(.+?)"', payload.user_prompt)
+            topic = topic_match.group(1).strip() if topic_match else "o tema"
+            body_count = 3 + int(hashlib.sha256(topic.encode("utf-8")).hexdigest()[:2], 16) % 3
+            body_templates = [
+                f"Primeiro, simplifique {topic} em uma ideia central que a pessoa entenda sem esforço.",
+                "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
+                "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
+                f"Se quiser dar mais profundidade, conecte {topic} a um exemplo simples do dia a dia.",
+                "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
+            ]
+            body_blocks = body_templates[:body_count]
+            hook = f"Voce ja viu {topic} por este angulo?"
+            call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+            content = {
+                "title": f"Roteiro curto: {topic}",
+                "hook": hook,
+                "body_blocks": body_blocks,
+                "call_to_action": call_to_action,
+                "estimated_duration_seconds": 24 + len(body_blocks) * 6,
+                "style_tone": "didatico e direto",
+                "script": _build_consolidated_script_text(hook, body_blocks, call_to_action),
+                "beats": ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))], "cta"],
             }
         else:
             content = {
@@ -104,11 +213,16 @@ class ScriptEngineService:
             hook = await self._generate_hook(topic=topic, idea=idea, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
             script = await self._generate_script(topic=topic, idea=idea, hook=hook, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
             policy = await self._policy_check(topic=topic, script=script, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
+            normalized_script = _normalize_script_payload(
+                script.content,
+                topic=topic,
+                hook_text=str(hook.content.get("hook") or ""),
+            )
 
             video_slug = f"{_slugify(topic)}-{uuid4().hex[:8]}"
             video = Video(
                 channel_id=channel.id,
-                title=video_title or str(script.content.get("title") or topic),
+                title=video_title or str(normalized_script.get("title") or topic),
                 slug=video_slug,
                 status=WorkflowStatus.DRAFT,
             )
@@ -120,7 +234,7 @@ class ScriptEngineService:
                 "topic": topic,
                 "idea": idea.content,
                 "hook": hook.content,
-                "script": script.content,
+                "script": normalized_script,
                 "policy": policy.content,
             }
             script_row = Script(
@@ -129,8 +243,8 @@ class ScriptEngineService:
                 status=script_status,
                 topic=topic,
                 idea=str(idea.content.get("idea") or ""),
-                hook=str(hook.content.get("hook") or ""),
-                content=str(script.content.get("script") or ""),
+                hook=str(normalized_script.get("hook") or hook.content.get("hook") or ""),
+                content=str(normalized_script.get("script") or ""),
                 notes=_build_policy_notes(policy.content),
                 policy_risk_score=Decimal(str(policy.content["risk_score"])),
                 policy_decision=str(policy.content["decision"]),
@@ -152,6 +266,12 @@ class ScriptEngineService:
                 script_status=script_row.status.value,
                 policy_decision=script_row.policy_decision or "rejected",
                 policy_risk_score=script_row.policy_risk_score or Decimal("0"),
+                hook=str(normalized_script.get("hook") or ""),
+                body_blocks=list(normalized_script.get("body_blocks") or []),
+                call_to_action=str(normalized_script.get("call_to_action") or ""),
+                estimated_duration_seconds=int(normalized_script.get("estimated_duration_seconds") or 0) or None,
+                style_tone=str(normalized_script.get("style_tone") or ""),
+                script_text=str(normalized_script.get("script") or ""),
                 cache_hits={
                     "idea": bool(idea.content.get("cache_hit")),
                     "hook": bool(hook.content.get("cache_hit")),
@@ -191,7 +311,7 @@ class ScriptEngineService:
             operation="idea",
             topic=topic,
             prompt_context={"topic": topic},
-            system_prompt="You generate one concise video idea in JSON.",
+            system_prompt="You generate one concise video idea in JSON only.",
             user_prompt=f'Create one short video idea about "{topic}". Return JSON with keys idea, angle, title.',
             max_tokens=self.settings.openai_idea_max_tokens,
             llm_client=llm_client,
@@ -205,7 +325,7 @@ class ScriptEngineService:
             operation="hook",
             topic=topic,
             prompt_context={"topic": topic, "idea": idea_text},
-            system_prompt="You generate a hook for a short-form video in JSON.",
+            system_prompt="You generate a hook for a short-form video in JSON only.",
             user_prompt=(
                 f'Create a strong hook for a short video about "{topic}" using this idea: {idea_text!r}. '
                 "Return JSON with keys hook and alt_hook."
@@ -223,11 +343,15 @@ class ScriptEngineService:
             operation="script",
             topic=topic,
             prompt_context={"topic": topic, "idea": idea_text, "hook": hook_text},
-            system_prompt="You write a full short-form script in JSON.",
+            system_prompt=(
+                "You write a complete short-form script in JSON only. "
+                "The JSON must include hook, body_blocks, call_to_action, estimated_duration_seconds, style_tone, title, script and beats."
+            ),
             user_prompt=(
                 f'Write a short-form video script about "{topic}". '
                 f'Idea: {idea_text!r}. Hook: {hook_text!r}. '
-                "Return JSON with keys title, script, beats."
+                "Return JSON with keys title, hook, body_blocks, call_to_action, estimated_duration_seconds, style_tone, script and beats. "
+                "Use 3 to 5 short body_blocks and keep the final script concise enough for a Shorts video."
             ),
             max_tokens=self.settings.openai_script_max_tokens,
             llm_client=llm_client,

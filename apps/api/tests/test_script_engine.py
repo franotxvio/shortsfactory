@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -27,14 +28,33 @@ class FakeOpenAIJSONClient:
         lower_prompt = payload.system_prompt.lower()
 
         if "idea" in lower_prompt:
-            content = {"idea": "Explique uma curiosidade simples em formato curto.", "angle": "curiosidade", "title": "Ideia curta"}
+            content = {
+                "idea": "Explique uma curiosidade simples em formato curto.",
+                "angle": "curiosidade",
+                "title": "Ideia curta",
+            }
         elif "hook" in lower_prompt:
-            content = {"hook": "Você já percebeu isso em menos de 10 segundos?", "alt_hook": "Isso vai mudar sua forma de ver o tema."}
+            content = {
+                "hook": "Voce ja percebeu isso em menos de 10 segundos?",
+                "alt_hook": "Isso vai mudar sua forma de ver o tema.",
+            }
         elif "script" in lower_prompt:
+            hook = "Voce ja viu esse tema por este angulo?"
+            body_blocks = [
+                "Primeiro, simplifique a ideia central para ganhar atencao rapido.",
+                "Depois, mostre um exemplo curto para deixar o assunto pratico.",
+                "Em seguida, destaque o ganho direto para manter o ritmo.",
+            ]
+            call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem."
             content = {
                 "title": "Roteiro enxuto",
-                "script": "Abra com a curiosidade, desenvolva em três pontos e feche com uma frase forte.",
-                "beats": ["hook", "explicacao", "fecho"],
+                "hook": hook,
+                "body_blocks": body_blocks,
+                "call_to_action": call_to_action,
+                "estimated_duration_seconds": 36,
+                "style_tone": "didatico e direto",
+                "script": "\n\n".join([hook, *body_blocks, call_to_action]),
+                "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
             }
         else:
             content = {
@@ -49,7 +69,7 @@ class FakeOpenAIJSONClient:
             model=model,
             request_id="req_test",
             usage=LLMUsage(prompt_tokens=10, completion_tokens=20),
-            raw_content='{"ok": true}',
+            raw_content=json.dumps(content),
         )
 
 
@@ -64,6 +84,22 @@ class FakeScriptEngineService:
             policy_decision="approved",
             policy_risk_score=Decimal("0.2300"),
             cache_hits={"idea": True, "hook": True, "script": True, "policy": True},
+            hook="Voce ja viu esse tema por este angulo?",
+            body_blocks=[
+                "Primeiro, simplifique a ideia central para ganhar atencao rapido.",
+                "Depois, mostre um exemplo curto para deixar o assunto pratico.",
+                "Em seguida, destaque o ganho direto para manter o ritmo.",
+            ],
+            call_to_action="Se isso te ajudou, salva o video e compartilha com alguem.",
+            estimated_duration_seconds=36,
+            style_tone="didatico e direto",
+            script_text=(
+                "Voce ja viu esse tema por este angulo?\n\n"
+                "Primeiro, simplifique a ideia central para ganhar atencao rapido.\n\n"
+                "Depois, mostre um exemplo curto para deixar o assunto pratico.\n\n"
+                "Em seguida, destaque o ganho direto para manter o ritmo.\n\n"
+                "Se isso te ajudou, salva o video e compartilha com alguem."
+            ),
         )
 
 
@@ -89,7 +125,6 @@ class FakeAsyncOpenAI:
     response_usage: FakeLLMUsageData | None = None
     response_model: str = "deepseek-chat"
     response_request_id: str = "req-deepseek"
-    response_content: str = '{"risk_score": 0.19, "decision": "approved", "reasons": ["ok"], "allowed_topics": ["educacao"]}'
 
     def __init__(self, **kwargs: object) -> None:
         FakeAsyncOpenAI.last_init_kwargs = {"api_key": kwargs.get("api_key"), "base_url": kwargs.get("base_url")}
@@ -102,11 +137,65 @@ class FakeAsyncOpenAI:
         class _Completions:
             async def create(self, **kwargs: object):
                 FakeAsyncOpenAI.last_chat_kwargs = kwargs
+                messages = kwargs.get("messages", [])
+                system_prompt = ""
+                user_prompt = ""
+                if isinstance(messages, list):
+                    for message in messages:
+                        if not isinstance(message, dict):
+                            continue
+                        if message.get("role") == "system":
+                            system_prompt = str(message.get("content") or "")
+                        elif message.get("role") == "user":
+                            user_prompt = str(message.get("content") or "")
+
+                lower_prompt = system_prompt.lower()
+                if "idea" in lower_prompt:
+                    content = {
+                        "idea": "Explique uma curiosidade simples em formato curto.",
+                        "angle": "curiosidade",
+                        "title": "Ideia curta",
+                    }
+                elif "hook" in lower_prompt:
+                    content = {
+                        "hook": "Voce ja percebeu isso em menos de 10 segundos?",
+                        "alt_hook": "Isso vai mudar sua forma de ver o tema.",
+                    }
+                elif "script" in lower_prompt:
+                    import re
+
+                    topic_match = re.search(r'about "(.+?)"', user_prompt)
+                    topic = topic_match.group(1).strip() if topic_match else "o tema"
+                    hook = f"Voce ja viu {topic} por este angulo?"
+                    body_blocks = [
+                        f"Primeiro, simplifique {topic} em uma ideia central que a pessoa entenda sem esforco.",
+                        "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
+                        "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
+                    ]
+                    call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+                    content = {
+                        "title": f"Roteiro curto: {topic}",
+                        "hook": hook,
+                        "body_blocks": body_blocks,
+                        "call_to_action": call_to_action,
+                        "estimated_duration_seconds": 42,
+                        "style_tone": "didatico e direto",
+                        "script": "\n\n".join([hook, *body_blocks, call_to_action]),
+                        "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
+                    }
+                else:
+                    content = {
+                        "risk_score": 0.19,
+                        "decision": "approved",
+                        "reasons": ["ok"],
+                        "allowed_topics": ["educacao"],
+                    }
+
                 return type(
                     "FakeResponse",
                     (),
                     {
-                        "choices": [FakeLLMChoice(message=FakeLLMMessage(content=FakeAsyncOpenAI.response_content))],
+                        "choices": [FakeLLMChoice(message=FakeLLMMessage(content=json.dumps(content)))],
                         "model": FakeAsyncOpenAI.response_model,
                         "id": FakeAsyncOpenAI.response_request_id,
                         "usage": FakeAsyncOpenAI.response_usage,
@@ -135,6 +224,13 @@ async def test_script_engine_uses_cache_and_logs_costs(db_session) -> None:
     assert first.cache_hits == {"idea": False, "hook": False, "script": False, "policy": False}
     assert second.cache_hits == {"idea": True, "hook": True, "script": True, "policy": True}
     assert len(fake_client.calls) == 4
+    assert first.hook is not None
+    assert first.body_blocks is not None
+    assert len(first.body_blocks) >= 3
+    assert first.call_to_action is not None
+    assert first.estimated_duration_seconds is not None
+    assert first.style_tone == "didatico e direto"
+    assert "Primeiro, simplifique" in (first.script_text or "")
 
     channel_count = await db_session.scalar(select(func.count()).select_from(Channel))
     video_count = await db_session.scalar(select(func.count()).select_from(Video))
@@ -154,6 +250,8 @@ async def test_script_engine_uses_cache_and_logs_costs(db_session) -> None:
     assert latest_script.policy_risk_score == Decimal("0.2300")
     assert latest_script.policy_decision == "approved"
     assert latest_script.generation_payload is not None
+    assert latest_script.generation_payload["script"]["hook"] == first.hook
+    assert latest_script.generation_payload["script"]["body_blocks"] == first.body_blocks
 
 
 def test_internal_script_route_returns_response() -> None:
@@ -176,6 +274,9 @@ def test_internal_script_route_returns_response() -> None:
     body = ScriptEngineTestResponse.model_validate(response.json())
     assert body.script_status == "approved"
     assert body.cache_hits == {"idea": True, "hook": True, "script": True, "policy": True}
+    assert body.hook is not None
+    assert body.call_to_action is not None
+    assert body.estimated_duration_seconds == 36
 
 
 @pytest.mark.asyncio
@@ -194,6 +295,7 @@ async def test_fake_script_engine_does_not_instantiate_provider(db_session, monk
     )
 
     assert result.script_status == "approved"
+    assert result.hook is not None
     cost_log_count = await db_session.scalar(select(func.count()).select_from(CostLog))
     assert cost_log_count == 0
 
@@ -237,6 +339,7 @@ async def test_deepseek_provider_uses_config_and_logs_costs(db_session, monkeypa
     )
 
     assert result.script_status == "approved"
+    assert result.hook is not None
     assert FakeAsyncOpenAI.last_init_kwargs == {
         "api_key": "sk-deepseek",
         "base_url": "https://api.deepseek.com/v1",
