@@ -1,5 +1,7 @@
 from enum import Enum
 
+from sqlalchemy import Enum as SAEnum
+
 
 class LifecycleStatus(str, Enum):
     ACTIVE = "active"
@@ -13,3 +15,23 @@ class WorkflowStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     COMPLETED = "completed"
+
+
+def lifecycle_status_type(**kwargs: object) -> SAEnum:
+    return SAEnum(
+        LifecycleStatus,
+        name="lifecycle_status",
+        native_enum=True,
+        values_callable=lambda enum_cls: [enum_member.value for enum_member in enum_cls],
+        **kwargs,
+    )
+
+
+def workflow_status_type(**kwargs: object) -> SAEnum:
+    return SAEnum(
+        WorkflowStatus,
+        name="workflow_status",
+        native_enum=True,
+        values_callable=lambda enum_cls: [enum_member.value for enum_member in enum_cls],
+        **kwargs,
+    )

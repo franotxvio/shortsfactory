@@ -6,7 +6,6 @@ from decimal import Decimal
 from sqlalchemy import (
     BigInteger,
     DateTime,
-    Enum,
     ForeignKey,
     Index,
     Integer,
@@ -20,7 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
 from app.models.base import Base, TimestampMixin
-from app.models.enums import LifecycleStatus, WorkflowStatus
+from app.models.enums import LifecycleStatus, WorkflowStatus, lifecycle_status_type, workflow_status_type
 
 
 class Channel(TimestampMixin, Base):
@@ -30,7 +29,7 @@ class Channel(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
     status: Mapped[LifecycleStatus] = mapped_column(
-        Enum(LifecycleStatus, name="lifecycle_status", native_enum=True),
+        lifecycle_status_type(),
         nullable=False,
         default=LifecycleStatus.ACTIVE,
         server_default=LifecycleStatus.ACTIVE.value,
@@ -50,7 +49,7 @@ class Video(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[WorkflowStatus] = mapped_column(
-        Enum(WorkflowStatus, name="workflow_status", native_enum=True),
+        workflow_status_type(),
         nullable=False,
         default=WorkflowStatus.DRAFT,
         server_default=WorkflowStatus.DRAFT.value,
@@ -75,15 +74,24 @@ class Script(TimestampMixin, Base):
         ForeignKey("videos.id", ondelete="CASCADE"),
         nullable=False,
     )
+    topic: Mapped[str | None] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[WorkflowStatus] = mapped_column(
-        Enum(WorkflowStatus, name="workflow_status", native_enum=True),
+        workflow_status_type(),
         nullable=False,
         default=WorkflowStatus.DRAFT,
         server_default=WorkflowStatus.DRAFT.value,
     )
+    idea: Mapped[str | None] = mapped_column(Text)
+    hook: Mapped[str | None] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    policy_risk_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    policy_decision: Mapped[str | None] = mapped_column(String(32))
+    generation_payload: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    llm_model: Mapped[str | None] = mapped_column(String(128))
+    llm_cache_key: Mapped[str | None] = mapped_column(String(255))
+    llm_input_hash: Mapped[str | None] = mapped_column(String(64))
 
     video: Mapped[Video] = relationship(back_populates="scripts")
 
@@ -91,6 +99,7 @@ class Script(TimestampMixin, Base):
         UniqueConstraint("video_id", "version", name="uq_scripts_video_id_version"),
         Index("ix_scripts_video_id", "video_id"),
         Index("ix_scripts_status", "status"),
+        Index("ix_scripts_policy_risk_score", "policy_risk_score"),
     )
 
 
@@ -143,7 +152,7 @@ class AssetPool(TimestampMixin, Base):
     license_name: Mapped[str] = mapped_column(String(128), nullable=False)
     license_url: Mapped[str | None] = mapped_column(String(1024))
     status: Mapped[LifecycleStatus] = mapped_column(
-        Enum(LifecycleStatus, name="lifecycle_status", native_enum=True),
+        lifecycle_status_type(),
         nullable=False,
         default=LifecycleStatus.ACTIVE,
         server_default=LifecycleStatus.ACTIVE.value,
@@ -165,7 +174,7 @@ class VideoPattern(TimestampMixin, Base):
     pattern_type: Mapped[str] = mapped_column(String(64), nullable=False)
     score: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=0)
     status: Mapped[LifecycleStatus] = mapped_column(
-        Enum(LifecycleStatus, name="lifecycle_status", native_enum=True),
+        lifecycle_status_type(),
         nullable=False,
         default=LifecycleStatus.ACTIVE,
         server_default=LifecycleStatus.ACTIVE.value,
@@ -186,7 +195,7 @@ class WeakPattern(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)
     status: Mapped[LifecycleStatus] = mapped_column(
-        Enum(LifecycleStatus, name="lifecycle_status", native_enum=True),
+        lifecycle_status_type(),
         nullable=False,
         default=LifecycleStatus.ACTIVE,
         server_default=LifecycleStatus.ACTIVE.value,
@@ -206,7 +215,7 @@ class WinningPattern(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     evidence: Mapped[dict[str, object] | list[object] | None] = mapped_column(JSONB)
     status: Mapped[LifecycleStatus] = mapped_column(
-        Enum(LifecycleStatus, name="lifecycle_status", native_enum=True),
+        lifecycle_status_type(),
         nullable=False,
         default=LifecycleStatus.ACTIVE,
         server_default=LifecycleStatus.ACTIVE.value,
@@ -253,7 +262,7 @@ class SimilarityCheck(TimestampMixin, Base):
     threshold: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     similarity_score: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     status: Mapped[WorkflowStatus] = mapped_column(
-        Enum(WorkflowStatus, name="workflow_status", native_enum=True),
+        workflow_status_type(),
         nullable=False,
         default=WorkflowStatus.PENDING_REVIEW,
         server_default=WorkflowStatus.PENDING_REVIEW.value,
@@ -276,7 +285,7 @@ class CostBudget(TimestampMixin, Base):
     period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[LifecycleStatus] = mapped_column(
-        Enum(LifecycleStatus, name="lifecycle_status", native_enum=True),
+        lifecycle_status_type(),
         nullable=False,
         default=LifecycleStatus.ACTIVE,
         server_default=LifecycleStatus.ACTIVE.value,
