@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -319,6 +320,10 @@ async def test_full_video_pipeline_generates_local_artifacts(db_session, tmp_pat
     tts_worker = TTSWorker(session=db_session, client=fake_tts_client, settings=settings)
     production_service = VideoProductionService(session=db_session, settings=settings, tts_worker=tts_worker)
 
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        worker = TTSWorker(session=session, client=fake_tts_client, settings=settings)
+        return VideoProductionService(session=session, settings=settings, tts_worker=worker)
+
     video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
     assert video is not None
 
@@ -608,6 +613,125 @@ async def test_internal_video_preview_defaults_to_default_template(
     assert status_state.visual_template == "default"
     assert commands
     assert "FontSize=28" in " ".join(commands[0])
+
+
+@pytest.mark.asyncio
+async def test_internal_video_export_package_creates_files_and_metadata(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    await _create_approved_script(db_session)
+    audio_bytes = _build_mp3_bytes(tmp_path)
+    fake_tts_client = FakeTTSClient(audio_bytes=audio_bytes)
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+    tts_worker = TTSWorker(session=db_session, client=fake_tts_client, settings=settings)
+    production_service = VideoProductionService(session=db_session, settings=settings, tts_worker=tts_worker)
+
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        worker = TTSWorker(session=session, client=fake_tts_client, settings=settings)
+        return VideoProductionService(session=session, settings=settings, tts_worker=worker)
+
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+
+    result = await production_service.produce_full_video(video_id=video.id)
+    assert Path(result.final_path).exists()
+    await db_session.commit()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    original_get_settings = internal_videos_routes.get_settings
+    internal_videos_routes.get_settings = lambda: settings
+    try:
+        with TestClient(app) as client:
+            export_response = client.post(f"/internal/videos/{video.id}/export-package")
+            assert export_response.status_code == 200, export_response.text
+            exported = VideoPipelineResponse.model_validate(export_response.json())
+            assert exported.export_metadata_path is not None
+            assert exported.export_final_path is not None
+            assert exported.export_caption_path is not None
+            assert exported.export_preview_path is not None
+
+            metadata_response = client.get("/internal/videos/files", params={"path": exported.export_metadata_path})
+            assert metadata_response.status_code == 200
+            assert metadata_response.headers["content-type"].startswith("application/json")
+            assert metadata_response.headers["content-disposition"].lower().startswith("inline")
+            metadata = json.loads(metadata_response.text)
+    finally:
+        internal_videos_routes.get_settings = original_get_settings
+        app.dependency_overrides.clear()
+
+    export_root = tmp_path / "storage" / "exports" / video.slug
+    assert (export_root / "final.mp4").exists()
+    assert (export_root / "captions.srt").exists()
+    assert (export_root / "metadata.json").exists()
+    assert metadata["video_id"] == video.id
+    assert metadata["slug"] == video.slug
+    assert metadata["title"] == video.title
+    assert metadata["script"]["hook"] == exported.hook
+    assert metadata["script"]["body_blocks"] == exported.body_blocks
+    assert metadata["script"]["call_to_action"] == exported.call_to_action
+    assert metadata["visual_template"] == exported.visual_template
+    assert metadata["paths"]["final_path"] == result.final_path
+    assert metadata["paths"]["export_final_path"] == exported.export_final_path
+    assert metadata["content_brain"]["performance_label"] == exported.performance_label
+
+
+@pytest.mark.asyncio
+async def test_internal_video_export_package_blocks_without_final_render(
+    temp_database_url: str,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            export_response = client.post(f"/internal/videos/{created.video_id}/export-package")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert export_response.status_code == 400
+    assert "final render" in export_response.json()["detail"].lower(), export_response.json()
 
 
 @pytest.mark.asyncio

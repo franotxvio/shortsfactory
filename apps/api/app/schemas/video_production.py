@@ -46,6 +46,11 @@ class VideoProductionResponse(BaseModel):
     winning_signals_count: int = 0
     weak_signals_count: int = 0
     applied_reason_tags: list[str] | None = None
+    export_package_dir: str | None = None
+    export_metadata_path: str | None = None
+    export_final_path: str | None = None
+    export_preview_path: str | None = None
+    export_caption_path: str | None = None
 
 
 class VideoCreateRequest(BaseModel):
@@ -154,6 +159,11 @@ class VideoPipelineResponse(BaseModel):
     winning_signals_count: int = 0
     weak_signals_count: int = 0
     applied_reason_tags: list[str] | None = None
+    export_package_dir: str | None = None
+    export_metadata_path: str | None = None
+    export_final_path: str | None = None
+    export_preview_path: str | None = None
+    export_caption_path: str | None = None
 
 
 class ChannelPresetUpsertRequest(BaseModel):

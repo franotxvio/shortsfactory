@@ -36,6 +36,11 @@ type VideoItem = {
   winning_signals_count?: number;
   weak_signals_count?: number;
   applied_reason_tags?: string[] | null;
+  export_package_dir?: string | null;
+  export_metadata_path?: string | null;
+  export_final_path?: string | null;
+  export_preview_path?: string | null;
+  export_caption_path?: string | null;
   performance_label?: string | null;
   performance_notes?: string | null;
   performance_reason_tags?: string[] | null;
@@ -197,6 +202,10 @@ function FileLinks({
     { label: "Abrir final", path: video.final_path },
     { label: "Abrir captions", path: video.caption_path },
     { label: "Abrir asset", path: video.asset_path },
+    { label: "Metadata export", path: video.export_metadata_path },
+    { label: "Final export", path: video.export_final_path },
+    { label: "Captions export", path: video.export_caption_path },
+    { label: "Preview export", path: video.export_preview_path },
   ].filter((item) => Boolean(item.path));
 
   if (links.length === 0) {
@@ -298,6 +307,7 @@ export default function DashboardPage() {
   const scriptEditable = selectedVideo?.stage_status === "script_approved";
   const pipelineCompleted =
     selectedVideo?.stage_status === "final_rendered" || selectedVideo?.status === "completed";
+  const exportPackageReady = Boolean(selectedVideo && selectedVideo.stage_status === "final_rendered");
   const previewNeedsRefresh = Boolean(
     selectedVideo &&
       selectedVideo.preview_path &&
@@ -1110,6 +1120,31 @@ export default function DashboardPage() {
     }
   }
 
+  async function generateExportPackage() {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de gerar o pacote de export." });
+      return;
+    }
+    if (!exportPackageReady) {
+      setMessage({ kind: "error", text: "O pacote de export so pode ser gerado depois do render final." });
+      return;
+    }
+
+    setBusyAction("export-package");
+    try {
+      const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/export-package`, {
+        method: "POST",
+      });
+      mergeVideo(updated);
+      setMessage({ kind: "success", text: `Pacote de export gerado para o video ${selectedVideoId}.` });
+      void loadVideos({ quiet: true });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao gerar pacote de export." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadVideos();
@@ -1672,10 +1707,20 @@ export default function DashboardPage() {
                 >
                   {busyAction === "final" ? "Renderizando..." : "Render final"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => void generateExportPackage()}
+                  disabled={busyAction !== null || !exportPackageReady}
+                >
+                  {busyAction === "export-package" ? "Gerando export..." : "Gerar pacote de export"}
+                </button>
               </div>
               <p className="helper">
                 Cada botao segue a ordem real do pipeline. Se o stage atual nao permitir a etapa, a API responde com erro claro.
               </p>
+              {exportPackageReady ? (
+                <p className="helper">Depois do render final, voce pode gerar o pacote local com metadata e arquivos exportados.</p>
+              ) : null}
             </div>
 
             <div className="panel asset-panel">
@@ -1854,6 +1899,10 @@ export default function DashboardPage() {
               <PathLine label="asset_path" value={selectedVideo.asset_path} />
               <PathLine label="preview_path" value={selectedVideo.preview_path} />
               <PathLine label="final_path" value={selectedVideo.final_path} />
+              <PathLine label="export_metadata_path" value={selectedVideo.export_metadata_path} />
+              <PathLine label="export_final_path" value={selectedVideo.export_final_path} />
+              <PathLine label="export_caption_path" value={selectedVideo.export_caption_path} />
+              <PathLine label="export_preview_path" value={selectedVideo.export_preview_path} />
             </div>
           </div>
         ) : (

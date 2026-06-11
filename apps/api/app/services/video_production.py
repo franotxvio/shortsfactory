@@ -4,6 +4,7 @@ import json
 import hashlib
 import re
 import unicodedata
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -69,6 +70,11 @@ class VideoProductionResult:
     winning_signals_count: int = 0
     weak_signals_count: int = 0
     applied_reason_tags: list[str] | None = None
+    export_package_dir: str | None = None
+    export_metadata_path: str | None = None
+    export_final_path: str | None = None
+    export_preview_path: str | None = None
+    export_caption_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -108,6 +114,11 @@ class VideoPipelineState:
     winning_signals_count: int = 0
     weak_signals_count: int = 0
     applied_reason_tags: list[str] | None = None
+    export_package_dir: str | None = None
+    export_metadata_path: str | None = None
+    export_final_path: str | None = None
+    export_preview_path: str | None = None
+    export_caption_path: str | None = None
 
 
 class _DeterministicTTSClient:
@@ -554,6 +565,81 @@ class VideoProductionService:
     async def render_final(self, *, video_id: int):
         return await self.render_worker.render_final(video_id=video_id)
 
+    async def create_export_package(self, *, video_id: int) -> VideoPipelineState:
+        statement = (
+            select(Video)
+            .options(selectinload(Video.asset), selectinload(Video.channel), selectinload(Video.scripts))
+            .where(Video.id == video_id)
+        )
+        video = await self.session.scalar(statement)
+        if video is None:
+            raise ValueError(f"Video {video_id} not found")
+        if video.stage_status != VideoStageStatus.FINAL_RENDERED:
+            raise ValueError("Export package is only available after final render")
+        if not video.final_path:
+            raise ValueError("Final render is required before exporting")
+        if not video.caption_path:
+            raise ValueError("Captions are required before exporting")
+
+        final_source = self._storage_relative_to_absolute_path(video.final_path)
+        if not final_source.exists():
+            raise ValueError("Final render file not found")
+        caption_source = self._storage_relative_to_absolute_path(video.caption_path)
+        if not caption_source.exists():
+            raise ValueError("Captions file not found")
+        preview_source = self._storage_relative_to_absolute_path(video.preview_path) if video.preview_path else None
+        asset_source = self._storage_relative_to_absolute_path(video.asset.source_path) if video.asset and video.asset.source_path else None
+
+        script_metadata = await self._get_latest_script_metadata(video_id=video_id)
+        asset_details = self.asset_service.describe_asset(video.asset)
+        state = self._build_state(
+            video,
+            channel_slug=video.channel.slug if video.channel is not None else None,
+            script_id=script_metadata["script_id"],
+            script_status=script_metadata["script_status"],
+            asset_path=asset_details.source_path if asset_details else None,
+            asset_name=asset_details.name if asset_details else None,
+            asset_slug=asset_details.slug if asset_details else None,
+            asset_type=asset_details.asset_type if asset_details else None,
+            asset_channel_slug=asset_details.channel_slug if asset_details else None,
+            asset_topic=asset_details.topic if asset_details else None,
+            asset_tags=asset_details.tags if asset_details else None,
+            script_text=script_metadata["script_text"],
+            hook=script_metadata["hook"],
+            body_blocks=script_metadata["body_blocks"],
+            call_to_action=script_metadata["call_to_action"],
+            estimated_duration_seconds=script_metadata["estimated_duration_seconds"],
+            style_tone=script_metadata["style_tone"],
+        )
+
+        export_dir = self._export_package_dir(video.slug)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_final_path = export_dir / "final.mp4"
+        shutil.copy2(final_source, export_final_path)
+
+        export_preview_path: Path | None = None
+        if preview_source is not None and preview_source.exists():
+            export_preview_path = export_dir / "preview.mp4"
+            shutil.copy2(preview_source, export_preview_path)
+
+        export_caption_path = export_dir / "captions.srt"
+        shutil.copy2(caption_source, export_caption_path)
+
+        export_metadata_path = export_dir / "metadata.json"
+        export_metadata = self._build_export_metadata(
+            video=video,
+            state=state,
+            asset_source=asset_source,
+            export_dir=export_dir,
+            export_final_path=export_final_path,
+            export_preview_path=export_preview_path,
+            export_caption_path=export_caption_path,
+            export_metadata_path=export_metadata_path,
+        )
+        export_metadata_path.write_text(json.dumps(export_metadata, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        await self.session.flush()
+        return await self.get_status(video_id=video_id)
+
     async def get_status(self, *, video_id: int) -> VideoPipelineState:
         statement = select(Video).options(selectinload(Video.asset), selectinload(Video.channel)).where(Video.id == video_id)
         video = await self.session.scalar(statement)
@@ -693,6 +779,11 @@ class VideoProductionService:
                 winning_signals_count=winning_signals_count,
                 weak_signals_count=weak_signals_count,
                 applied_reason_tags=applied_reason_tags,
+                export_package_dir=None,
+                export_metadata_path=None,
+                export_final_path=None,
+                export_preview_path=None,
+                export_caption_path=None,
             )
         return state
 
@@ -763,6 +854,11 @@ class VideoProductionService:
             winning_signals_count=result.winning_signals_count,
             weak_signals_count=result.weak_signals_count,
             applied_reason_tags=result.applied_reason_tags,
+            export_package_dir=None,
+            export_metadata_path=None,
+            export_final_path=None,
+            export_preview_path=None,
+            export_caption_path=None,
         )
 
     async def _get_or_create_channel(self, *, channel_slug: str, channel_name: str) -> Channel:
@@ -815,9 +911,15 @@ class VideoProductionService:
         applied_reason_tags: list[str] | None = None,
         visual_template: str | None = None,
         target_duration_seconds: int | None = None,
+        export_package_dir: str | None = None,
+        export_metadata_path: str | None = None,
+        export_final_path: str | None = None,
+        export_preview_path: str | None = None,
+        export_caption_path: str | None = None,
     ) -> VideoPipelineState:
         resolved_visual_template = visual_template or self.render_worker.get_visual_template(video.id)
         performance_record = self.content_brain_service.describe_video_performance(video_id=video.id)
+        export_paths = self._describe_export_package(video.slug)
         return VideoPipelineState(
             video_id=video.id,
             video_slug=video.slug,
@@ -854,6 +956,11 @@ class VideoProductionService:
             performance_label=performance_record.performance_label,
             performance_notes=performance_record.notes,
             performance_reason_tags=performance_record.reason_tags,
+            export_package_dir=export_package_dir if export_package_dir is not None else export_paths["export_package_dir"],
+            export_metadata_path=export_metadata_path if export_metadata_path is not None else export_paths["export_metadata_path"],
+            export_final_path=export_final_path if export_final_path is not None else export_paths["export_final_path"],
+            export_preview_path=export_preview_path if export_preview_path is not None else export_paths["export_preview_path"],
+            export_caption_path=export_caption_path if export_caption_path is not None else export_paths["export_caption_path"],
         )
 
     def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
@@ -885,6 +992,11 @@ class VideoProductionService:
             winning_signals_count=state.winning_signals_count,
             weak_signals_count=state.weak_signals_count,
             applied_reason_tags=state.applied_reason_tags,
+            export_package_dir=state.export_package_dir,
+            export_metadata_path=state.export_metadata_path,
+            export_final_path=state.export_final_path,
+            export_preview_path=state.export_preview_path,
+            export_caption_path=state.export_caption_path,
         )
 
     def _build_fake_script(self, *, topic: str) -> str:
@@ -1135,6 +1247,115 @@ class VideoProductionService:
             if text:
                 items.append(text)
         return items
+
+    def _export_package_dir(self, video_slug: str) -> Path:
+        return self.settings.local_storage_path / "exports" / video_slug
+
+    def _describe_export_package(self, video_slug: str) -> dict[str, str | None]:
+        export_dir = self._export_package_dir(video_slug)
+        metadata_path = export_dir / "metadata.json"
+        if not metadata_path.exists():
+            return {
+                "export_package_dir": None,
+                "export_metadata_path": None,
+                "export_final_path": None,
+                "export_preview_path": None,
+                "export_caption_path": None,
+            }
+        final_path = export_dir / "final.mp4"
+        preview_path = export_dir / "preview.mp4"
+        caption_path = export_dir / "captions.srt"
+        return {
+            "export_package_dir": self._absolute_to_storage_path(export_dir),
+            "export_metadata_path": self._absolute_to_storage_path(metadata_path),
+            "export_final_path": self._absolute_to_storage_path(final_path) if final_path.exists() else None,
+            "export_preview_path": self._absolute_to_storage_path(preview_path) if preview_path.exists() else None,
+            "export_caption_path": self._absolute_to_storage_path(caption_path) if caption_path.exists() else None,
+        }
+
+    def _build_export_metadata(
+        self,
+        *,
+        video: Video,
+        state: VideoPipelineState,
+        asset_source: Path | None,
+        export_dir: Path,
+        export_final_path: Path,
+        export_preview_path: Path | None,
+        export_caption_path: Path,
+        export_metadata_path: Path,
+    ) -> dict[str, object]:
+        return {
+            "video_id": state.video_id,
+            "slug": video.slug,
+            "title": video.title,
+            "channel_slug": state.channel_slug,
+            "script": {
+                "script_id": state.script_id,
+                "script_status": state.script_status,
+                "hook": state.hook,
+                "body_blocks": state.body_blocks or [],
+                "call_to_action": state.call_to_action,
+                "script_text": state.script_text,
+                "estimated_duration_seconds": state.estimated_duration_seconds,
+                "style_tone": state.style_tone,
+            },
+            "visual_template": state.visual_template,
+            "asset": {
+                "asset_id": state.asset_id,
+                "name": state.asset_name,
+                "slug": state.asset_slug,
+                "type": state.asset_type,
+                "channel_slug": state.asset_channel_slug,
+                "topic": state.asset_topic,
+                "tags": state.asset_tags or [],
+                "path": state.asset_path,
+                "source_path": self._absolute_to_storage_path(asset_source) if asset_source is not None else None,
+            },
+            "content_brain": {
+                "performance_label": state.performance_label,
+                "notes": state.performance_notes,
+                "reason_tags": state.performance_reason_tags or [],
+                "context_used": state.content_brain_context_used,
+                "winning_signals_count": state.winning_signals_count,
+                "weak_signals_count": state.weak_signals_count,
+                "applied_reason_tags": state.applied_reason_tags or [],
+            },
+            "paths": {
+                "audio_path": state.audio_path,
+                "caption_path": state.caption_path,
+                "preview_path": state.preview_path,
+                "final_path": state.final_path,
+                "export_dir": self._absolute_to_storage_path(export_dir),
+                "export_metadata_path": self._absolute_to_storage_path(export_metadata_path),
+                "export_final_path": self._absolute_to_storage_path(export_final_path),
+                "export_preview_path": self._absolute_to_storage_path(export_preview_path) if export_preview_path is not None else None,
+                "export_caption_path": self._absolute_to_storage_path(export_caption_path),
+            },
+        }
+
+    def _storage_relative_to_absolute_path(self, stored_path: str) -> Path:
+        requested_path = Path(stored_path)
+        storage_root = self.settings.local_storage_path.resolve()
+        if requested_path.is_absolute():
+            resolved_path = requested_path.resolve()
+        else:
+            storage_base = storage_root.parent
+            resolved_path = (storage_base / requested_path).resolve()
+        try:
+            resolved_path.relative_to(storage_root)
+        except ValueError as exc:
+            raise ValueError("Path must stay within the configured storage directory") from exc
+        return resolved_path
+
+    def _absolute_to_storage_path(self, path: Path) -> str:
+        storage_root = self.settings.local_storage_path.resolve()
+        resolved_path = path.resolve()
+        try:
+            relative_path = resolved_path.relative_to(storage_root)
+        except ValueError as exc:
+            raise ValueError("Path must stay within the configured storage directory") from exc
+        return str(Path(storage_root.name) / relative_path)
 
     def _channel_presets_dir(self) -> Path:
         return self.settings.local_storage_path / "config" / "channel-presets"

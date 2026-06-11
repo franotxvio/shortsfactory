@@ -146,7 +146,7 @@ def _resolve_storage_file_path(path_value: str) -> Path:
     if not resolved_path.exists() or not resolved_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    allowed_suffixes = {".mp4", ".srt", ".png", ".jpg", ".jpeg", ".webp"}
+    allowed_suffixes = {".mp4", ".srt", ".png", ".jpg", ".jpeg", ".webp", ".json"}
     if resolved_path.suffix.lower() not in allowed_suffixes:
         raise HTTPException(status_code=400, detail="Unsupported file type")
 
@@ -164,8 +164,9 @@ async def get_storage_file(path: str) -> FileResponse:
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
         ".srt": "text/plain; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
     }
-    content_disposition_type = "inline" if suffix in {".mp4", ".png", ".jpg", ".jpeg", ".webp", ".srt"} else "attachment"
+    content_disposition_type = "inline" if suffix in {".mp4", ".png", ".jpg", ".jpeg", ".webp", ".srt", ".json"} else "attachment"
     return FileResponse(
         resolved_path,
         filename=resolved_path.name,
@@ -619,6 +620,21 @@ async def render_final(
         await service.render_final(video_id=video_id)
         await _commit_if_available(service)
         result = await service.get_status(video_id=video_id)
+    except ValueError as error:
+        await _rollback_if_available(service)
+        _raise_http_error(error)
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
+
+
+@router.post("/{video_id}/export-package", response_model=VideoPipelineResponse)
+async def create_export_package(
+    video_id: int,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> VideoPipelineResponse:
+    try:
+        result = await service.create_export_package(video_id=video_id)
+        await _commit_if_available(service)
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
