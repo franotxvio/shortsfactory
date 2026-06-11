@@ -166,5 +166,21 @@ class ChannelPresetListResponse(BaseModel):
     items: list[ChannelPresetResponse]
 
 
+class VideoJobEnqueueRequest(BaseModel):
+    visual_template: str = Field(default="default", max_length=64)
+
+
+class VideoJobResponse(BaseModel):
+    job_id: str
+    video_id: int
+    job_type: str
+    status: str
+    error_message: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    visual_template: str | None = None
+
+
 class VideoListResponse(BaseModel):
     items: list[VideoPipelineResponse]

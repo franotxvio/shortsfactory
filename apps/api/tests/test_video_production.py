@@ -23,9 +23,11 @@ from app.schemas.video_production import VideoPipelineResponse
 from app.schemas.video_production import VideoProductionResponse
 from app.services.llm_types import LLMResult, LLMUsage
 from app.services.openai_client import OpenAIJSONClient
+from app.services.video_job_queue import VideoJobQueueService, get_video_job_queue_service
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
 from app.services.video_production import VideoProductionResult, VideoProductionService
+from app.schemas.video_production import VideoJobResponse
 import app.api.routes.internal_videos as internal_videos_routes
 import app.services.render_worker as render_worker_module
 
@@ -109,6 +111,34 @@ class FakeVideoProductionService:
             final_path="storage/renders/finals/fake.mp4",
             asset_path="storage/assets/system-default-background.png",
         )
+
+
+class FakeRedis:
+    def __init__(self) -> None:
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.values: dict[str, str] = {}
+        self.queues: dict[str, list[str]] = {}
+
+    async def hset(self, key: str, mapping: dict[str, str]) -> None:
+        self.hashes[key] = dict(mapping)
+
+    async def hgetall(self, key: str) -> dict[str, str]:
+        return dict(self.hashes.get(key, {}))
+
+    async def set(self, key: str, value: str) -> None:
+        self.values[key] = str(value)
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def lpush(self, key: str, value: str) -> None:
+        self.queues.setdefault(key, []).insert(0, str(value))
+
+    async def blpop(self, key: str, timeout: int = 0):  # noqa: ANN001
+        queue = self.queues.get(key, [])
+        if queue:
+            return key, queue.pop()
+        return None
 
 
 def _build_mp3_bytes(tmp_path: Path) -> bytes:
@@ -231,6 +261,21 @@ def _build_preset_settings(tmp_path: Path) -> Settings:
         final_output_path=storage_root / "renders" / "finals",
         whisper_model_path=storage_root / "models" / "missing.bin",
         ffmpeg_path="ffmpeg",
+    )
+
+
+def _build_job_settings(tmp_path: Path, *, database_url: str) -> Settings:
+    storage_root = tmp_path / "storage"
+    return Settings(
+        local_storage_path=storage_root,
+        asset_pool_path=storage_root / "assets",
+        audio_output_path=storage_root / "audio",
+        caption_output_path=storage_root / "captions",
+        preview_output_path=storage_root / "renders" / "previews",
+        final_output_path=storage_root / "renders" / "finals",
+        whisper_model_path=storage_root / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+        database_url=database_url,
     )
 
 
@@ -1590,3 +1635,203 @@ async def test_real_tts_with_mock_records_cost_log(db_session, tmp_path) -> None
     assert cost_log is not None
     assert cost_log.provider == "openai"
     assert cost_log.operation == "tts"
+
+
+@pytest.mark.asyncio
+async def test_background_full_pipeline_job_enqueues_and_completes(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    fake_redis = FakeRedis()
+    queue_service = VideoJobQueueService(
+        settings=_build_job_settings(tmp_path, database_url=temp_database_url),
+        redis_client=fake_redis,
+    )
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_job_queue_service] = lambda: queue_service
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            enqueue_response = client.post(
+                f"/internal/videos/{created.video_id}/jobs/produce",
+                json={"visual_template": "default"},
+            )
+            assert enqueue_response.status_code == 200
+            job = VideoJobResponse.model_validate(enqueue_response.json())
+            assert job.status == "queued"
+            assert job.job_type == "full_pipeline_fake"
+
+            latest_response = client.get(f"/internal/videos/{created.video_id}/jobs/latest")
+            assert latest_response.status_code == 200
+            latest_job = VideoJobResponse.model_validate(latest_response.json())
+            assert latest_job.job_id == job.job_id
+            assert latest_job.status == "queued"
+    finally:
+        app.dependency_overrides.clear()
+
+    completed_job = await queue_service.run_job_now(job.job_id)
+    assert completed_job.status == "succeeded"
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_job_queue_service] = lambda: queue_service
+    try:
+        with TestClient(app) as client:
+            job_status_response = client.get(f"/internal/videos/jobs/{job.job_id}")
+            assert job_status_response.status_code == 200
+            job_status = VideoJobResponse.model_validate(job_status_response.json())
+            assert job_status.status == "succeeded"
+
+            video_status_response = client.get(f"/internal/videos/{created.video_id}/status")
+            assert video_status_response.status_code == 200
+            video_status = VideoPipelineResponse.model_validate(video_status_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    refreshed_video = await db_session.get(Video, created.video_id)
+    assert refreshed_video is not None
+    assert refreshed_video.stage_status == VideoStageStatus.FINAL_RENDERED
+    assert video_status.stage_status == VideoStageStatus.FINAL_RENDERED.value
+    assert video_status.final_path is not None
+
+
+@pytest.mark.asyncio
+async def test_background_step_job_enqueues_and_completes(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    fake_redis = FakeRedis()
+    queue_service = VideoJobQueueService(
+        settings=_build_job_settings(tmp_path, database_url=temp_database_url),
+        redis_client=fake_redis,
+    )
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_job_queue_service] = lambda: queue_service
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            enqueue_response = client.post(
+                f"/internal/videos/{created.video_id}/jobs/tts",
+                json={"visual_template": "default"},
+            )
+            assert enqueue_response.status_code == 200
+            job = VideoJobResponse.model_validate(enqueue_response.json())
+            assert job.status == "queued"
+            assert job.job_type == "tts"
+    finally:
+        app.dependency_overrides.clear()
+
+    completed_job = await queue_service.run_job_now(job.job_id)
+    assert completed_job.status == "succeeded"
+
+    refreshed_video = await db_session.get(Video, created.video_id)
+    assert refreshed_video is not None
+    assert refreshed_video.stage_status == VideoStageStatus.TTS_DONE
+    assert refreshed_video.audio_path is not None
+
+
+@pytest.mark.asyncio
+async def test_background_job_failure_records_error(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    async def _fail_produce(self, **kwargs):  # noqa: ANN001
+        raise ValueError("boom")
+
+    monkeypatch.setattr(VideoProductionService, "produce_full_video", _fail_produce)
+
+    fake_redis = FakeRedis()
+    queue_service = VideoJobQueueService(
+        settings=_build_job_settings(tmp_path, database_url=temp_database_url),
+        redis_client=fake_redis,
+    )
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_job_queue_service] = lambda: queue_service
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            enqueue_response = client.post(
+                f"/internal/videos/{created.video_id}/jobs/produce",
+                json={"visual_template": "default"},
+            )
+            assert enqueue_response.status_code == 200
+            job = VideoJobResponse.model_validate(enqueue_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    with pytest.raises(ValueError, match="boom"):
+        await queue_service.run_job_now(job.job_id)
+
+    failed_job = await queue_service.get_job(job.job_id)
+    assert failed_job is not None
+    assert failed_job.status == "failed"
+    assert failed_job.error_message == "boom"

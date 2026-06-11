@@ -16,6 +16,8 @@ from app.schemas.video_production import (
     ChannelPresetListResponse,
     ChannelPresetResponse,
     ChannelPresetUpsertRequest,
+    VideoJobEnqueueRequest,
+    VideoJobResponse,
     VideoCreateRequest,
     VideoAssetSelectionRequest,
     VideoListResponse,
@@ -28,6 +30,7 @@ from app.schemas.video_production import (
     VideoStepRequest,
 )
 from app.services.video_production import VideoProductionService
+from app.services.video_job_queue import VideoJobQueueService, get_video_job_queue_service
 
 router = APIRouter(prefix="/videos", tags=["internal-videos"])
 DEMO_CHANNEL_SLUGS = {"internal-test", "manual-test"}
@@ -53,6 +56,11 @@ async def _rollback_if_available(service: VideoProductionService) -> None:
 
 def _is_production_env() -> bool:
     return get_settings().app_env.lower() == "production"
+
+
+def _ensure_jobs_allowed() -> None:
+    if _is_production_env():
+        raise HTTPException(status_code=403, detail="Background jobs are disabled in production")
 
 
 async def _is_demo_video(service: VideoProductionService, *, video_id: int) -> bool:
@@ -84,6 +92,10 @@ def _asset_response_from_record(record) -> AssetResponse:
 
 def _channel_preset_response_from_record(record) -> ChannelPresetResponse:
     return ChannelPresetResponse.model_validate(asdict(record))
+
+
+def _job_response_from_record(record) -> VideoJobResponse:
+    return VideoJobResponse.model_validate(asdict(record))
 
 
 def _resolve_storage_file_path(path_value: str) -> Path:
@@ -233,6 +245,68 @@ async def upsert_channel_preset(
     except ValueError as error:
         _raise_http_error(error)
     return _channel_preset_response_from_record(preset)
+
+
+@router.get("/{video_id}/jobs/latest", response_model=VideoJobResponse)
+async def get_latest_video_job(
+    video_id: int,
+    service: VideoProductionService = Depends(get_video_production_service),
+    queue_service: VideoJobQueueService = Depends(get_video_job_queue_service),
+) -> VideoJobResponse:
+    _ensure_jobs_allowed()
+    try:
+        await service.get_status(video_id=video_id)
+        job = await queue_service.get_latest_job_for_video(video_id=video_id)
+    except ValueError as error:
+        _raise_http_error(error)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _job_response_from_record(job)
+
+
+@router.get("/jobs/{job_id}", response_model=VideoJobResponse)
+async def get_job_status(
+    job_id: str,
+    queue_service: VideoJobQueueService = Depends(get_video_job_queue_service),
+) -> VideoJobResponse:
+    _ensure_jobs_allowed()
+    job = await queue_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _job_response_from_record(job)
+
+
+@router.post("/{video_id}/jobs/produce", response_model=VideoJobResponse)
+async def enqueue_full_pipeline_job(
+    video_id: int,
+    payload: VideoJobEnqueueRequest,
+    service: VideoProductionService = Depends(get_video_production_service),
+    queue_service: VideoJobQueueService = Depends(get_video_job_queue_service),
+) -> VideoJobResponse:
+    _ensure_jobs_allowed()
+    try:
+        await service.get_status(video_id=video_id)
+        job = await queue_service.enqueue_full_pipeline_fake(video_id=video_id, visual_template=payload.visual_template)
+    except ValueError as error:
+        _raise_http_error(error)
+    return _job_response_from_record(job)
+
+
+@router.post("/{video_id}/jobs/{job_type}", response_model=VideoJobResponse)
+async def enqueue_step_job(
+    video_id: int,
+    job_type: str,
+    payload: VideoJobEnqueueRequest,
+    service: VideoProductionService = Depends(get_video_production_service),
+    queue_service: VideoJobQueueService = Depends(get_video_job_queue_service),
+) -> VideoJobResponse:
+    _ensure_jobs_allowed()
+    try:
+        await service.get_status(video_id=video_id)
+        job = await queue_service.enqueue_step(video_id=video_id, job_type=job_type, visual_template=payload.visual_template)
+    except ValueError as error:
+        _raise_http_error(error)
+    return _job_response_from_record(job)
 
 
 @router.get("", response_model=VideoListResponse)

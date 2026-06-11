@@ -71,6 +71,18 @@ type ChannelPresetListResponse = {
   items: ChannelPresetItem[];
 };
 
+type VideoJobItem = {
+  job_id: string;
+  video_id: number;
+  job_type: string;
+  status: string;
+  error_message?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  visual_template?: string | null;
+};
+
 type MessageState = {
   kind: "idle" | "success" | "error";
   text: string;
@@ -189,6 +201,7 @@ export default function DashboardPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [assets, setAssets] = useState<AssetItem[]>([]);
   const [channelPresets, setChannelPresets] = useState<ChannelPresetItem[]>([]);
+  const [latestJob, setLatestJob] = useState<VideoJobItem | null>(null);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
   const channelSlugRef = useRef(DEFAULT_FORM.channelSlug);
@@ -292,6 +305,13 @@ export default function DashboardPage() {
     return value ? `${value}s` : "opcional";
   }
 
+  function formatJobTimestamp(value?: string | null) {
+    if (!value) {
+      return "pendente";
+    }
+    return new Date(value).toLocaleString("pt-BR");
+  }
+
   const applyPresetToForm = useCallback((preset: ChannelPresetItem | null) => {
     if (!preset) {
       setPresetChannelName("");
@@ -325,6 +345,28 @@ export default function DashboardPage() {
     channelSlugRef.current = channelSlug;
   }, [channelSlug]);
 
+  const loadLatestJob = useCallback(async (videoId: number | null, options?: { baseUrl?: string; quiet?: boolean }) => {
+    if (videoId === null) {
+      setLatestJob(null);
+      return;
+    }
+    const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
+    const quiet = options?.quiet ?? false;
+    try {
+      const payload = await requestJson<VideoJobItem>(baseUrl, `/internal/videos/${videoId}/jobs/latest`);
+      setLatestJob(payload);
+      if (!quiet) {
+        setMessage({ kind: "success", text: `Job ${payload.job_id} atualizado para o video ${videoId}.` });
+      }
+    } catch (error) {
+      setLatestJob(null);
+      const text = error instanceof Error ? error.message : "Falha ao carregar job.";
+      if (!quiet && !text.includes("Job not found")) {
+        setMessage({ kind: "error", text });
+      }
+    }
+  }, []);
+
   const loadVideos = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
     const quiet = options?.quiet ?? false;
@@ -342,6 +384,8 @@ export default function DashboardPage() {
       setScriptDraft(buildScriptDraft(nextSelectedVideo));
       setSelectedVisualTemplate(nextSelectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
       setPendingAssetId(null);
+      setLatestJob(null);
+      void loadLatestJob(nextSelectedId, { quiet: true });
       if (!quiet) {
         setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
       }
@@ -352,7 +396,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadLatestJob]);
 
   const loadAssets = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
@@ -405,6 +449,8 @@ export default function DashboardPage() {
     setScriptDraft(buildScriptDraft(nextVideo));
     setSelectedVisualTemplate(nextVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
+    setLatestJob(null);
+    void loadLatestJob(nextVideo.video_id, { quiet: true });
   }
 
   function selectVideo(video: VideoItem) {
@@ -413,6 +459,8 @@ export default function DashboardPage() {
     setScriptDraft(buildScriptDraft(video));
     setSelectedVisualTemplate(video.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
+    setLatestJob(null);
+    void loadLatestJob(video.video_id, { quiet: true });
   }
 
   async function createFakeVideo() {
@@ -471,6 +519,30 @@ export default function DashboardPage() {
     }
   }
 
+  async function enqueueBackgroundPipeline() {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de enfileirar o pipeline." });
+      return;
+    }
+
+    setBusyAction("enqueue-job");
+    try {
+      const job = await requestJson<VideoJobItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/jobs/produce`, {
+        method: "POST",
+        body: JSON.stringify({
+          visual_template: selectedVisualTemplate,
+        }),
+      });
+      setLatestJob(job);
+      setMessage({ kind: "success", text: `Job ${job.job_id} enfileirado em background.` });
+      void loadVideos({ quiet: true });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao enfileirar o pipeline." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function refreshSelectedStatus() {
     if (selectedVideoId === null) {
       setMessage({ kind: "error", text: "Selecione um video para consultar o status." });
@@ -484,6 +556,22 @@ export default function DashboardPage() {
       setMessage({ kind: "success", text: `Status atualizado para o video ${selectedVideoId}.` });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao consultar status." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function refreshLatestJob() {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video para consultar o job." });
+      return;
+    }
+
+    setBusyAction("job-status");
+    try {
+      await loadLatestJob(selectedVideoId);
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao consultar job." });
     } finally {
       setBusyAction(null);
     }
@@ -945,6 +1033,14 @@ export default function DashboardPage() {
           >
             {pipelineCompleted ? "Pipeline concluido" : busyAction === "produce" ? "Processando..." : "Produzir pipeline fake"}
           </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => void enqueueBackgroundPipeline()}
+            disabled={busyAction !== null || selectedVideoId === null}
+          >
+            {busyAction === "enqueue-job" ? "Enfileirando..." : "Produzir em background"}
+          </button>
           {pipelineCompleted ? <p className="helper">Este video ja esta finalizado. Atualize ou escolha outro item para rodar novamente.</p> : null}
 
           <div className={`message ${message.kind}`}>
@@ -1097,6 +1193,48 @@ export default function DashboardPage() {
                   <AssetTags tags={selectedVideo.asset_tags} />
                 </div>
               ) : null}
+              <div className={`job-card${latestJob?.status === "failed" ? " failed" : ""}`}>
+                <div className="panel-header">
+                  <h3>Job em background</h3>
+                  <div className="panel-actions">
+                    <span className="panel-hint">{latestJob ? latestJob.job_id : "nenhum job"}</span>
+                    <button type="button" className="ghost" onClick={() => void refreshLatestJob()} disabled={busyAction !== null}>
+                      Atualizar job
+                    </button>
+                  </div>
+                </div>
+                {latestJob ? (
+                  <div className="detail-asset">
+                    <p>
+                      <strong>Tipo:</strong> {latestJob.job_type}
+                    </p>
+                    <p>
+                      <strong>Status:</strong> {latestJob.status}
+                    </p>
+                    <p>
+                      <strong>Criado em:</strong> {formatJobTimestamp(latestJob.created_at)}
+                    </p>
+                    <p>
+                      <strong>Iniciado em:</strong> {formatJobTimestamp(latestJob.started_at)}
+                    </p>
+                    <p>
+                      <strong>Finalizado em:</strong> {formatJobTimestamp(latestJob.finished_at)}
+                    </p>
+                    {latestJob.visual_template ? (
+                      <p>
+                        <strong>Template:</strong> {latestJob.visual_template}
+                      </p>
+                    ) : null}
+                    {latestJob.error_message ? (
+                      <p className="warning">
+                        <strong>Erro:</strong> {latestJob.error_message}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="helper">Nenhum job enfileirado para este video ainda.</p>
+                )}
+              </div>
             </div>
 
             <div className="script-editor">
