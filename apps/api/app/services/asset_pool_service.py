@@ -13,7 +13,7 @@ from app.models.core import AssetPool, Video
 from app.models.enums import LifecycleStatus, VideoStageStatus
 from app.services.media_utils import ensure_parent_dir, run_command
 
-_ALLOWED_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".mp4"}
+_ALLOWED_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _DEFAULT_ASSET_SLUG = "system-default-background"
 _DEFAULT_ASSET_NAME = "Default Background"
 _ASSET_MANIFEST_FILENAME = ".asset-pool-manifest.json"
@@ -373,6 +373,12 @@ class AssetPoolService:
         if requested_path.is_absolute():
             raise ValueError("Asset path must be relative to storage/assets")
 
+        parts = requested_path.parts
+        if len(parts) >= 2 and parts[0].lower() == "storage" and parts[1].lower() == "assets":
+            requested_path = Path(*parts[2:])
+            if not requested_path.parts:
+                raise ValueError("Asset path must point to a file inside storage/assets")
+
         asset_root = self.settings.asset_pool_path.resolve()
         resolved_path = (asset_root / requested_path).resolve()
         try:
@@ -382,6 +388,9 @@ class AssetPoolService:
 
         if not resolved_path.exists() or not resolved_path.is_file():
             raise ValueError("Asset file not found")
+
+        if resolved_path.suffix.lower() == ".mp4":
+            raise ValueError("Background video assets (.mp4) are not supported yet")
 
         if resolved_path.suffix.lower() not in _ALLOWED_ASSET_SUFFIXES:
             raise ValueError("Unsupported asset file type")

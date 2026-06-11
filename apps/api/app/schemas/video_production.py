@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from pydantic import AliasChoices
 from pydantic import BaseModel, Field
 
 from app.models.enums import VideoExecutionMode
@@ -58,10 +59,10 @@ class VideoAssetSelectionRequest(BaseModel):
 
 
 class AssetRegisterRequest(BaseModel):
-    relative_path: str = Field(min_length=1, max_length=1024)
+    file_path: str = Field(min_length=1, max_length=1024, validation_alias=AliasChoices("file_path", "relative_path"))
     name: str | None = Field(default=None, max_length=255)
     slug: str | None = Field(default=None, max_length=160)
-    asset_type: str | None = Field(default=None, max_length=64)
+    asset_type: str | None = Field(default="background_image", max_length=64)
     license_name: str = Field(default="generated-local", max_length=128)
     license_url: str | None = Field(default=None, max_length=1024)
     channel_slug: str | None = Field(default=None, max_length=160)

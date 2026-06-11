@@ -69,6 +69,16 @@ const DEFAULT_FORM = {
   videoTitle: "Teste manual",
 };
 
+const DEFAULT_ASSET_FORM = {
+  filePath: "storage/assets/manual/python-bg.png",
+  name: "Python Background",
+  slug: "python-background",
+  licenseName: "generated-local",
+  channelSlug: "",
+  topic: "",
+  tagsText: "python, background",
+};
+
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
 }
@@ -163,6 +173,13 @@ export default function DashboardPage() {
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
   const [scriptDraft, setScriptDraft] = useState("");
+  const [assetFilePath, setAssetFilePath] = useState(DEFAULT_ASSET_FORM.filePath);
+  const [assetName, setAssetName] = useState(DEFAULT_ASSET_FORM.name);
+  const [assetSlug, setAssetSlug] = useState(DEFAULT_ASSET_FORM.slug);
+  const [assetLicenseName, setAssetLicenseName] = useState(DEFAULT_ASSET_FORM.licenseName);
+  const [assetChannelSlug, setAssetChannelSlug] = useState(DEFAULT_ASSET_FORM.channelSlug);
+  const [assetTopic, setAssetTopic] = useState(DEFAULT_ASSET_FORM.topic);
+  const [assetTagsText, setAssetTagsText] = useState(DEFAULT_ASSET_FORM.tagsText);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<MessageState>({ kind: "idle", text: "" });
@@ -206,6 +223,13 @@ export default function DashboardPage() {
 
   function canSelectAsset(video: VideoItem | null) {
     return video?.stage_status === "caption_done" || video?.stage_status === "asset_ready";
+  }
+
+  function parseTagsInput(value: string) {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   useEffect(() => {
@@ -406,6 +430,31 @@ export default function DashboardPage() {
       void loadAssets({ quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao aplicar asset." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function registerLocalAsset() {
+    setBusyAction("register-asset");
+    try {
+      await requestJson<AssetItem>(apiBaseUrl, "/internal/videos/assets/register-local", {
+        method: "POST",
+        body: JSON.stringify({
+          file_path: assetFilePath,
+          name: assetName,
+          slug: assetSlug,
+          asset_type: "background_image",
+          license_name: assetLicenseName,
+          channel_slug: assetChannelSlug || undefined,
+          topic: assetTopic || undefined,
+          tags: parseTagsInput(assetTagsText),
+        }),
+      });
+      await loadAssets({ quiet: true });
+      setMessage({ kind: "success", text: `Asset local cadastrado com sucesso a partir de ${assetFilePath}.` });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao cadastrar asset local." });
     } finally {
       setBusyAction(null);
     }
@@ -788,6 +837,47 @@ export default function DashboardPage() {
               <p className="helper">
                 Use um asset local antes do preview. O fallback padrao continua disponivel se nada for escolhido.
               </p>
+              <div className="asset-form">
+                <div className="asset-form-grid">
+                  <label className="field">
+                    <span>File path</span>
+                    <input value={assetFilePath} onChange={(event) => setAssetFilePath(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Nome</span>
+                    <input value={assetName} onChange={(event) => setAssetName(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Slug</span>
+                    <input value={assetSlug} onChange={(event) => setAssetSlug(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Licenca</span>
+                    <input value={assetLicenseName} onChange={(event) => setAssetLicenseName(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Channel slug opcional</span>
+                    <input value={assetChannelSlug} onChange={(event) => setAssetChannelSlug(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Tema/nicho opcional</span>
+                    <input value={assetTopic} onChange={(event) => setAssetTopic(event.target.value)} />
+                  </label>
+                  <label className="field asset-form-tags">
+                    <span>Tags opcional</span>
+                    <input value={assetTagsText} onChange={(event) => setAssetTagsText(event.target.value)} />
+                  </label>
+                </div>
+                <div className="asset-form-actions">
+                  <span className="panel-hint">asset_type: background_image</span>
+                  <button type="button" className="primary secondary" onClick={() => void registerLocalAsset()} disabled={busyAction !== null}>
+                    {busyAction === "register-asset" ? "Cadastrando..." : "Cadastrar asset"}
+                  </button>
+                </div>
+                <p className="helper">
+                  Exemplo pronto para a UI: <code>storage/assets/manual/python-bg.png</code>. Arquivos .mp4 ainda sao bloqueados.
+                </p>
+              </div>
               <div className="asset-list">
                 {assets.length === 0 ? (
                   <div className="empty-state">Nenhum asset local cadastrado. O fallback padrao sera usado.</div>

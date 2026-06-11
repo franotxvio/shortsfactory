@@ -178,7 +178,7 @@ async def register_local_asset(
 ) -> AssetResponse:
     try:
         asset = await service.register_local_asset(
-            relative_path=payload.relative_path,
+            relative_path=payload.file_path,
             name=payload.name,
             slug=payload.slug,
             asset_type=payload.asset_type,

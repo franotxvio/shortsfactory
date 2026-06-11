@@ -428,6 +428,33 @@ textarea:focus {
   gap: 12px;
 }
 
+.asset-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(2, 6, 23, 0.18);
+}
+
+.asset-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.asset-form-tags {
+  grid-column: 1 / -1;
+}
+
+.asset-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
 .asset-list {
   display: grid;
   gap: 12px;
@@ -497,6 +524,10 @@ textarea:focus {
   }
 
   .connection-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .asset-form-grid {
     grid-template-columns: 1fr;
   }
 }

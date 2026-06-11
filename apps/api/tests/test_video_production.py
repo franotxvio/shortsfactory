@@ -432,7 +432,7 @@ async def test_internal_asset_registration_and_listing(
             register_response = client.post(
                 "/internal/videos/assets/register-local",
                 json={
-                    "relative_path": "manual/hero.png",
+                    "file_path": "storage/assets/manual/hero.png",
                     "name": "Hero image",
                     "slug": "hero-image",
                     "asset_type": "background_image",
@@ -509,6 +509,56 @@ async def test_internal_asset_registration_blocks_traversal(
 
 
 @pytest.mark.asyncio
+async def test_internal_asset_registration_blocks_files_outside_storage_assets(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_service():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield VideoProductionService(session=session, settings=settings)
+        finally:
+            await engine.dispose()
+
+    outside_root = tmp_path / "storage" / "other"
+    outside_file = outside_root / "hero.png"
+    outside_file.parent.mkdir(parents=True, exist_ok=True)
+    outside_file.write_bytes(b"fake-png")
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+    app.dependency_overrides[get_video_production_service] = _override_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/internal/videos/assets/register-local",
+                json={
+                    "file_path": "storage/assets/../other/hero.png",
+                    "name": "Outside asset",
+                    "license_name": "generated-local",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "storage/assets" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_internal_asset_registration_blocks_mp4_backgrounds(
     db_session,
     temp_database_url: str,
@@ -546,7 +596,7 @@ async def test_internal_asset_registration_blocks_mp4_backgrounds(
             response = client.post(
                 "/internal/videos/assets/register-local",
                 json={
-                    "relative_path": "manual/clip.mp4",
+                    "file_path": "storage/assets/manual/clip.mp4",
                     "name": "Clip de fundo",
                     "license_name": "generated-local",
                 },
@@ -698,7 +748,7 @@ async def test_internal_asset_selection_before_preview_uses_manual_asset(
             register_response = client.post(
                 "/internal/videos/assets/register-local",
                 json={
-                    "relative_path": "manual/hero.png",
+                    "file_path": "storage/assets/manual/hero.png",
                     "name": "Hero image",
                     "slug": "hero-image",
                     "asset_type": "background_image",
