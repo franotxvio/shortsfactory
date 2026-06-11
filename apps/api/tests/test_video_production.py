@@ -30,6 +30,7 @@ from app.services.video_production import VideoProductionResult, VideoProduction
 from app.schemas.video_production import VideoJobResponse
 import app.api.routes.internal_videos as internal_videos_routes
 import app.services.render_worker as render_worker_module
+import app.workers.video_jobs_worker as video_jobs_worker
 
 
 @dataclass
@@ -569,7 +570,7 @@ async def test_internal_video_preview_defaults_to_default_template(
 
     monkeypatch.setattr(render_worker_module, "run_command", _fake_run_command)
 
-    video = await _create_video_ready_for_preview(db_session, slug_suffix="default")
+    video = await _create_video_ready_for_preview(db_session, slug_suffix="no-preset")
 
     app.dependency_overrides[get_async_session] = _override_async_session
     try:
@@ -1835,3 +1836,22 @@ async def test_background_job_failure_records_error(
     assert failed_job is not None
     assert failed_job.status == "failed"
     assert failed_job.error_message == "boom"
+
+
+def test_video_jobs_worker_configures_selector_policy_on_windows(monkeypatch) -> None:
+    class FakePolicy:
+        pass
+
+    calls: list[object] = []
+    monkeypatch.setattr(video_jobs_worker.sys, "platform", "win32")
+    monkeypatch.setattr(video_jobs_worker.asyncio, "WindowsSelectorEventLoopPolicy", FakePolicy, raising=False)
+    monkeypatch.setattr(
+        video_jobs_worker.asyncio,
+        "set_event_loop_policy",
+        lambda policy: calls.append(policy),
+    )
+
+    video_jobs_worker._configure_event_loop_policy()
+
+    assert len(calls) == 1
+    assert isinstance(calls[0], FakePolicy)
