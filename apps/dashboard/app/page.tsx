@@ -67,6 +67,41 @@ function PathLine({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
+function FileLinks({
+  apiBaseUrl,
+  video,
+}: {
+  apiBaseUrl: string;
+  video: VideoItem;
+}) {
+  const links = [
+    { label: "Abrir preview", path: video.preview_path },
+    { label: "Abrir final", path: video.final_path },
+    { label: "Abrir captions", path: video.caption_path },
+    { label: "Abrir asset", path: video.asset_path },
+  ].filter((item) => Boolean(item.path));
+
+  if (links.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="file-links">
+      {links.map((item) => (
+        <a
+          key={item.label}
+          className="file-link"
+          href={`${normalizeBaseUrl(apiBaseUrl)}/internal/videos/files?path=${encodeURIComponent(item.path ?? "")}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {item.label}
+        </a>
+      ))}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const apiBaseUrlRef = useRef(DEFAULT_API_BASE_URL);
@@ -326,6 +361,7 @@ export default function DashboardPage() {
                       <span>asset_id: {video.asset_id ?? "pending"}</span>
                       <span>{video.preview_approved_at ? `preview aprovada em ${video.preview_approved_at}` : "preview pendente"}</span>
                     </div>
+                    <FileLinks apiBaseUrl={apiBaseUrl} video={video} />
                   </button>
                 );
               })

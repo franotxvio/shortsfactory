@@ -1,7 +1,10 @@
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
+from app.core.config import get_settings
 from app.api.deps import get_video_production_service
 from app.schemas.video_production import (
     VideoCreateRequest,
@@ -32,6 +35,39 @@ async def _rollback_if_available(service: VideoProductionService) -> None:
     session = getattr(service, "session", None)
     if session is not None:
         await session.rollback()
+
+
+def _resolve_storage_file_path(path_value: str) -> Path:
+    if not path_value:
+        raise HTTPException(status_code=400, detail="Path is required")
+
+    requested_path = Path(path_value)
+    if requested_path.is_absolute():
+        raise HTTPException(status_code=400, detail="Only relative storage paths are allowed")
+
+    settings = get_settings()
+    storage_root = settings.local_storage_path.resolve()
+    storage_base = storage_root.parent
+    resolved_path = (storage_base / requested_path).resolve()
+    try:
+        resolved_path.relative_to(storage_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Path must stay within the configured storage directory") from exc
+
+    if not resolved_path.exists() or not resolved_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    allowed_suffixes = {".mp4", ".srt", ".png", ".jpg", ".jpeg", ".webp"}
+    if resolved_path.suffix.lower() not in allowed_suffixes:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+
+    return resolved_path
+
+
+@router.get("/files")
+async def get_storage_file(path: str) -> FileResponse:
+    resolved_path = _resolve_storage_file_path(path)
+    return FileResponse(resolved_path, filename=resolved_path.name)
 
 
 @router.get("", response_model=VideoListResponse)

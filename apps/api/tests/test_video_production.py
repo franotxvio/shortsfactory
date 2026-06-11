@@ -23,6 +23,7 @@ from app.services.openai_client import OpenAIJSONClient
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
 from app.services.video_production import VideoProductionResult, VideoProductionService
+import app.api.routes.internal_videos as internal_videos_routes
 
 
 @dataclass
@@ -406,6 +407,42 @@ def test_internal_video_preflight_allows_local_dashboard_origin() -> None:
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     assert "POST" in response.headers["access-control-allow-methods"]
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
+
+
+def test_internal_file_endpoint_serves_valid_storage_file(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    caption_path = storage_root / "captions" / "demo.srt"
+    caption_path.parent.mkdir(parents=True, exist_ok=True)
+    caption_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        internal_videos_routes,
+        "get_settings",
+        lambda: Settings(local_storage_path=storage_root),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/internal/videos/files", params={"path": "storage/captions/demo.srt"})
+
+    assert response.status_code == 200
+    assert "Hello" in response.text
+
+
+def test_internal_file_endpoint_blocks_path_traversal(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        internal_videos_routes,
+        "get_settings",
+        lambda: Settings(local_storage_path=storage_root),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/internal/videos/files", params={"path": "../outside.srt"})
+
+    assert response.status_code == 400
+    assert "storage directory" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

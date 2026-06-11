@@ -283,6 +283,30 @@ input:focus {
   flex-wrap: wrap;
 }
 
+.file-links {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(103, 232, 249, 0.22);
+  background: rgba(8, 17, 31, 0.55);
+  color: #cffafe;
+  text-decoration: none;
+  font-size: 0.82rem;
+}
+
+.file-link:hover {
+  border-color: rgba(103, 232, 249, 0.55);
+  background: rgba(8, 17, 31, 0.8);
+}
+
 .detail-panel {
   display: grid;
   gap: 18px;
