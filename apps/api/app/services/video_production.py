@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.models.core import AssetPool, Channel, Script, Video
 from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStatus, WorkflowStatus
+from app.services.content_brain import ContentBrainService
 from app.services.asset_pool_service import AssetPoolService
 from app.services.caption_worker import CaptionWorker
 from app.services.media_utils import build_deterministic_mp3_bytes
@@ -60,6 +61,9 @@ class VideoProductionResult:
     style_tone: str | None = None
     visual_template: str = "default"
     target_duration_seconds: int | None = None
+    performance_label: str = "unknown"
+    performance_notes: str | None = None
+    performance_reason_tags: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -92,6 +96,9 @@ class VideoPipelineState:
     style_tone: str | None = None
     visual_template: str = "default"
     target_duration_seconds: int | None = None
+    performance_label: str = "unknown"
+    performance_notes: str | None = None
+    performance_reason_tags: list[str] | None = None
 
 
 class _DeterministicTTSClient:
@@ -113,6 +120,7 @@ class VideoProductionService:
         tts_worker: TTSWorker | None = None,
         caption_worker: CaptionWorker | None = None,
         asset_service: AssetPoolService | None = None,
+        content_brain_service: ContentBrainService | None = None,
         render_worker: RenderWorker | None = None,
     ) -> None:
         self.session = session
@@ -121,6 +129,7 @@ class VideoProductionService:
         self.tts_worker = tts_worker or TTSWorker(session, settings=self.settings)
         self.caption_worker = caption_worker or CaptionWorker(session, settings=self.settings)
         self.asset_service = asset_service or AssetPoolService(session, settings=self.settings)
+        self.content_brain_service = content_brain_service or ContentBrainService(session, settings=self.settings)
         self.render_worker = render_worker or RenderWorker(session, settings=self.settings)
 
     async def produce_full_video(
@@ -446,6 +455,40 @@ class VideoProductionService:
             tags=tags,
         )
 
+    async def update_video_performance(
+        self,
+        *,
+        video_id: int,
+        performance_label: str,
+        notes: str | None = None,
+        reason_tags: list[str] | None = None,
+    ):
+        return await self.content_brain_service.update_video_performance(
+            video_id=video_id,
+            performance_label=performance_label,
+            notes=notes,
+            reason_tags=reason_tags,
+        )
+
+    async def list_content_brain_signals(
+        self,
+        *,
+        channel_slug: str | None = None,
+        topic: str | None = None,
+    ):
+        return await self.content_brain_service.list_signals(channel_slug=channel_slug, topic=topic)
+
+    async def get_content_brain_context(
+        self,
+        *,
+        channel_slug: str | None = None,
+        topic: str | None = None,
+    ) -> dict[str, object] | None:
+        return await self.content_brain_service.build_script_context(channel_slug=channel_slug, topic=topic)
+
+    async def get_video_performance(self, *, video_id: int):
+        return await self.content_brain_service.get_video_performance(video_id=video_id)
+
     async def render_preview(self, *, video_id: int, visual_template: str | None = None):
         return await self.render_worker.render_preview(video_id=video_id, visual_template=visual_template)
 
@@ -535,6 +578,10 @@ class VideoProductionService:
             channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name_to_use)
             video_slug = f"{self._slugify(topic)}-{uuid4().hex[:8]}"
             target_duration = preset.target_duration_seconds if preset is not None else None
+            content_brain_context = await self.content_brain_service.build_script_context(
+                channel_slug=channel_slug,
+                topic=topic,
+            )
             video = Video(
                 channel_id=channel.id,
                 title=video_title or f"Teste local: {topic}",
@@ -551,6 +598,7 @@ class VideoProductionService:
                 style_tone=preset.default_topic_style if preset is not None else None,
                 default_cta=preset.default_cta if preset is not None else None,
                 target_duration_seconds=target_duration,
+                content_brain_context=content_brain_context,
             )
             preset_asset = await self._get_asset_by_slug(preset.default_asset_slug) if preset and preset.default_asset_slug else None
             if preset_asset is not None:
@@ -563,6 +611,8 @@ class VideoProductionService:
                 await self.session.flush()
             if preset is not None and preset.default_visual_template:
                 self.render_worker.set_visual_template(video_id=video.id, visual_template=preset.default_visual_template)
+            else:
+                self.render_worker.set_visual_template(video_id=video.id, visual_template="default")
             script = Script(
                 video_id=video.id,
                 topic=topic,
@@ -580,6 +630,7 @@ class VideoProductionService:
                     "channel_slug": channel_slug,
                     "channel_name": channel_name_to_use,
                     "video_title": video_title,
+                    "content_brain_context": content_brain_context,
                     "script": script_content,
                 },
                 llm_model="local-fake",
@@ -622,6 +673,10 @@ class VideoProductionService:
         preset: ChannelPresetRecord | None = None,
     ) -> VideoPipelineState:
         service = ScriptEngineService(session=self.session, settings=self.settings)
+        content_brain_context = await self.content_brain_service.build_script_context(
+            channel_slug=channel_slug,
+            topic=topic,
+        )
         result = await service.create_test_script(
             topic=topic,
             channel_slug=channel_slug,
@@ -631,6 +686,7 @@ class VideoProductionService:
             style_tone=preset.default_topic_style if preset is not None else None,
             default_call_to_action=preset.default_cta if preset is not None else None,
             target_duration_seconds=preset.target_duration_seconds if preset is not None else None,
+            content_brain_context=content_brain_context,
         )
         statement = select(Video).options(selectinload(Video.channel), selectinload(Video.asset)).where(Video.id == result.video_id)
         video = await self.session.scalar(statement)
@@ -647,6 +703,8 @@ class VideoProductionService:
             video.asset = preset_asset
         if preset is not None and preset.default_visual_template:
             self.render_worker.set_visual_template(video_id=video.id, visual_template=preset.default_visual_template)
+        else:
+            self.render_worker.set_visual_template(video_id=video.id, visual_template="default")
         await self.session.flush()
         return self._build_state(
             video,
@@ -718,6 +776,7 @@ class VideoProductionService:
         target_duration_seconds: int | None = None,
     ) -> VideoPipelineState:
         resolved_visual_template = visual_template or self.render_worker.get_visual_template(video.id)
+        performance_record = self.content_brain_service.describe_video_performance(video_id=video.id)
         return VideoPipelineState(
             video_id=video.id,
             video_slug=video.slug,
@@ -747,6 +806,9 @@ class VideoProductionService:
             style_tone=style_tone,
             visual_template=resolved_visual_template,
             target_duration_seconds=target_duration_seconds if target_duration_seconds is not None else video.target_duration_seconds,
+            performance_label=performance_record.performance_label,
+            performance_notes=performance_record.notes,
+            performance_reason_tags=performance_record.reason_tags,
         )
 
     def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
@@ -771,6 +833,9 @@ class VideoProductionService:
             style_tone=state.style_tone,
             visual_template=state.visual_template,
             target_duration_seconds=state.target_duration_seconds,
+            performance_label=state.performance_label,
+            performance_notes=state.performance_notes,
+            performance_reason_tags=state.performance_reason_tags,
         )
 
     def _build_fake_script(self, *, topic: str) -> str:
@@ -786,6 +851,7 @@ class VideoProductionService:
         style_tone: str | None = None,
         default_cta: str | None = None,
         target_duration_seconds: int | None = None,
+        content_brain_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         topic_text = topic.strip() or "o tema"
         hook = f"Voce ja viu {topic_text} por este angulo?"
@@ -815,6 +881,7 @@ class VideoProductionService:
             "style_tone": style_tone or "didatico e direto",
             "script": script_text,
             "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
+            "content_brain_context": content_brain_context,
         }
 
     async def _get_latest_script(self, *, video_id: int) -> Script | None:

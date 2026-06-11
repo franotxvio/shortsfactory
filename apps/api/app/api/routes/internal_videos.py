@@ -16,6 +16,9 @@ from app.schemas.video_production import (
     ChannelPresetListResponse,
     ChannelPresetResponse,
     ChannelPresetUpsertRequest,
+    VideoPerformanceListResponse,
+    VideoPerformanceResponse,
+    VideoPerformanceUpdateRequest,
     VideoJobEnqueueRequest,
     VideoJobResponse,
     VideoCreateRequest,
@@ -83,7 +86,28 @@ async def _with_demo_flag(
     service: VideoProductionService,
     payload: VideoPipelineResponse | VideoProductionResponse,
 ) -> VideoPipelineResponse | VideoProductionResponse:
-    return payload.model_copy(update={"is_demo": await _is_demo_video(service, video_id=payload.video_id)})
+    payload = payload.model_copy(update={"is_demo": await _is_demo_video(service, video_id=payload.video_id)})
+    return await _with_content_brain_flag(service, payload)
+
+
+async def _with_content_brain_flag(
+    service: VideoProductionService,
+    payload: VideoPipelineResponse | VideoProductionResponse,
+) -> VideoPipelineResponse | VideoProductionResponse:
+    get_performance = getattr(service, "get_video_performance", None)
+    if not callable(get_performance):
+        return payload
+    try:
+        performance = await get_performance(video_id=payload.video_id)
+    except ValueError:
+        return payload
+    return payload.model_copy(
+        update={
+            "performance_label": performance.performance_label,
+            "performance_notes": performance.notes,
+            "performance_reason_tags": performance.reason_tags,
+        }
+    )
 
 
 def _asset_response_from_record(record) -> AssetResponse:
@@ -96,6 +120,10 @@ def _channel_preset_response_from_record(record) -> ChannelPresetResponse:
 
 def _job_response_from_record(record) -> VideoJobResponse:
     return VideoJobResponse.model_validate(asdict(record))
+
+
+def _performance_response_from_record(record) -> VideoPerformanceResponse:
+    return VideoPerformanceResponse.model_validate(asdict(record))
 
 
 def _resolve_storage_file_path(path_value: str) -> Path:
@@ -249,6 +277,41 @@ async def upload_local_asset(
         await _rollback_if_available(service)
         _raise_http_error(error)
     return _asset_response_from_record(asset)
+
+
+@router.get("/content-brain/signals", response_model=VideoPerformanceListResponse)
+async def list_content_brain_signals(
+    channel_slug: str | None = None,
+    topic: str | None = None,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> VideoPerformanceListResponse:
+    try:
+        signals = await service.list_content_brain_signals(channel_slug=channel_slug, topic=topic)
+    except ValueError as error:
+        _raise_http_error(error)
+    return VideoPerformanceListResponse(items=[_performance_response_from_record(item) for item in signals])
+
+
+@router.patch("/{video_id}/performance", response_model=VideoPipelineResponse)
+async def update_video_performance(
+    video_id: int,
+    payload: VideoPerformanceUpdateRequest,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> VideoPipelineResponse:
+    try:
+        await service.update_video_performance(
+            video_id=video_id,
+            performance_label=payload.performance_label,
+            notes=payload.notes,
+            reason_tags=payload.reason_tags,
+        )
+        await _commit_if_available(service)
+        result = await service.get_status(video_id=video_id)
+    except ValueError as error:
+        await _rollback_if_available(service)
+        _raise_http_error(error)
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.get("/channel-presets", response_model=ChannelPresetListResponse)

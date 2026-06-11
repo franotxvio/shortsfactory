@@ -18,6 +18,8 @@ from app.models.core import AssetPool, Channel, CostLog, Script, Video
 from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStatus, WorkflowStatus
 from app.schemas.video_production import AssetListResponse
 from app.schemas.video_production import AssetResponse
+from app.schemas.video_production import VideoPerformanceListResponse
+from app.schemas.video_production import VideoPerformanceResponse
 from app.schemas.video_production import VideoListResponse
 from app.schemas.video_production import VideoPipelineResponse
 from app.schemas.video_production import VideoProductionResponse
@@ -266,6 +268,21 @@ def _build_preset_settings(tmp_path: Path) -> Settings:
 
 
 def _build_job_settings(tmp_path: Path, *, database_url: str) -> Settings:
+    storage_root = tmp_path / "storage"
+    return Settings(
+        local_storage_path=storage_root,
+        asset_pool_path=storage_root / "assets",
+        audio_output_path=storage_root / "audio",
+        caption_output_path=storage_root / "captions",
+        preview_output_path=storage_root / "renders" / "previews",
+        final_output_path=storage_root / "renders" / "finals",
+        whisper_model_path=storage_root / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+        database_url=database_url,
+    )
+
+
+def _build_content_brain_settings(tmp_path: Path, *, database_url: str) -> Settings:
     storage_root = tmp_path / "storage"
     return Settings(
         local_storage_path=storage_root,
@@ -926,6 +943,122 @@ async def test_internal_video_script_update_after_tts_is_blocked(db_session, tem
 
     assert update_response.status_code == 400
     assert "before TTS" in update_response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_internal_video_performance_signals_update_and_list(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield VideoProductionService(session=session, settings=settings)
+        finally:
+            await engine.dispose()
+
+    settings = _build_content_brain_settings(tmp_path, database_url=temp_database_url)
+
+    app.dependency_overrides[get_video_production_service] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            winning_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "brain-channel",
+                    "channel_name": "Brain Channel",
+                    "video_title": "Winning video",
+                    "execution_mode": "fake",
+                },
+            )
+            weak_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "brain-channel",
+                    "channel_name": "Brain Channel",
+                    "video_title": "Weak video",
+                    "execution_mode": "fake",
+                },
+            )
+            assert winning_response.status_code == 200
+            assert weak_response.status_code == 200
+            winning_video = VideoPipelineResponse.model_validate(winning_response.json())
+            weak_video = VideoPipelineResponse.model_validate(weak_response.json())
+
+            winning_update = client.patch(
+                f"/internal/videos/{winning_video.video_id}/performance",
+                json={
+                    "performance_label": "winning",
+                    "notes": "Hook muito forte e direto.",
+                    "reason_tags": ["hook", "cta"],
+                },
+            )
+            weak_update = client.patch(
+                f"/internal/videos/{weak_video.video_id}/performance",
+                json={
+                    "performance_label": "weak",
+                    "notes": "Introducao longa demais.",
+                    "reason_tags": ["tempo", "intro"],
+                },
+            )
+            signals_response = client.get(
+                "/internal/videos/content-brain/signals",
+                params={"channel_slug": "brain-channel", "topic": "python"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert winning_update.status_code == 200
+    assert weak_update.status_code == 200
+    winning_state = VideoPipelineResponse.model_validate(winning_update.json())
+    weak_state = VideoPipelineResponse.model_validate(weak_update.json())
+    assert winning_state.performance_label == "winning"
+    assert winning_state.performance_notes == "Hook muito forte e direto."
+    assert winning_state.performance_reason_tags == ["hook", "cta"]
+    assert weak_state.performance_label == "weak"
+    assert weak_state.performance_reason_tags == ["tempo", "intro"]
+
+    assert signals_response.status_code == 200
+    signals = VideoPerformanceListResponse.model_validate(signals_response.json())
+    labels = {item.performance_label for item in signals.items}
+    assert labels == {"winning", "weak"}
+    assert any(item.notes == "Hook muito forte e direto." for item in signals.items)
+    assert any(item.notes == "Introducao longa demais." for item in signals.items)
+
+
+@pytest.mark.asyncio
+async def test_script_engine_receives_content_brain_context(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    fake_llm = FakeOpenAIJSONClient(calls=[])
+    settings = _build_content_brain_settings(tmp_path, database_url=temp_database_url)
+    service = ScriptEngineService(session=db_session, llm_client=fake_llm, settings=settings)
+
+    result = await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="brain-channel",
+        channel_name="Brain Channel",
+        video_title="Script context test",
+        execution_mode=VideoExecutionMode.FAKE,
+        content_brain_context={
+            "channel_slug": "brain-channel",
+            "topic": "python",
+            "winning_examples": [{"video_id": 1, "notes": "hook curto"}],
+            "weak_examples": [{"video_id": 2, "notes": "muito longo"}],
+            "winning_count": 1,
+            "weak_count": 1,
+        },
+    )
+
+    assert result.script_status == "approved"
+    assert any("winning_examples" in user_prompt and "weak_examples" in user_prompt for _, user_prompt, _, _ in fake_llm.calls)
 
 
 @pytest.mark.asyncio

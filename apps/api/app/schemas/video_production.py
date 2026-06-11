@@ -39,6 +39,9 @@ class VideoProductionResponse(BaseModel):
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
     visual_template: str = "default"
+    performance_label: str = "unknown"
+    performance_notes: str | None = None
+    performance_reason_tags: list[str] | None = None
 
 
 class VideoCreateRequest(BaseModel):
@@ -140,6 +143,9 @@ class VideoPipelineResponse(BaseModel):
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
     visual_template: str = "default"
+    performance_label: str = "unknown"
+    performance_notes: str | None = None
+    performance_reason_tags: list[str] | None = None
 
 
 class ChannelPresetUpsertRequest(BaseModel):
@@ -180,6 +186,27 @@ class VideoJobResponse(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     visual_template: str | None = None
+
+
+class VideoPerformanceUpdateRequest(BaseModel):
+    performance_label: str = Field(default="unknown", max_length=32)
+    notes: str | None = Field(default=None, max_length=10_000)
+    reason_tags: list[str] | None = None
+
+
+class VideoPerformanceResponse(BaseModel):
+    video_id: int
+    video_slug: str | None = None
+    channel_slug: str | None = None
+    topic: str | None = None
+    performance_label: str = "unknown"
+    notes: str | None = None
+    reason_tags: list[str] | None = None
+    updated_at: datetime | None = None
+
+
+class VideoPerformanceListResponse(BaseModel):
+    items: list[VideoPerformanceResponse]
 
 
 class VideoListResponse(BaseModel):

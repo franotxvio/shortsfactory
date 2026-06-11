@@ -32,6 +32,9 @@ type VideoItem = {
   style_tone?: string | null;
   visual_template?: string | null;
   target_duration_seconds?: number | null;
+  performance_label?: string | null;
+  performance_notes?: string | null;
+  performance_reason_tags?: string[] | null;
 };
 
 type AssetItem = {
@@ -81,6 +84,21 @@ type VideoJobItem = {
   started_at?: string | null;
   finished_at?: string | null;
   visual_template?: string | null;
+};
+
+type ContentBrainSignalItem = {
+  video_id: number;
+  video_slug?: string | null;
+  channel_slug?: string | null;
+  topic?: string | null;
+  performance_label?: string | null;
+  notes?: string | null;
+  reason_tags?: string[] | null;
+  updated_at?: string | null;
+};
+
+type ContentBrainSignalListResponse = {
+  items: ContentBrainSignalItem[];
 };
 
 type MessageState = {
@@ -208,6 +226,7 @@ export default function DashboardPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [assets, setAssets] = useState<AssetItem[]>([]);
   const [channelPresets, setChannelPresets] = useState<ChannelPresetItem[]>([]);
+  const [contentBrainSignals, setContentBrainSignals] = useState<ContentBrainSignalItem[]>([]);
   const [latestJob, setLatestJob] = useState<VideoJobItem | null>(null);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
@@ -236,6 +255,10 @@ export default function DashboardPage() {
   const [assetUploadChannelSlug, setAssetUploadChannelSlug] = useState(DEFAULT_UPLOAD_FORM.channelSlug);
   const [assetUploadTopic, setAssetUploadTopic] = useState(DEFAULT_UPLOAD_FORM.topic);
   const [assetUploadTagsText, setAssetUploadTagsText] = useState(DEFAULT_UPLOAD_FORM.tagsText);
+  const [performanceFilter, setPerformanceFilter] = useState("all");
+  const [performanceLabel, setPerformanceLabel] = useState("unknown");
+  const [performanceNotes, setPerformanceNotes] = useState("");
+  const [performanceReasonTagsText, setPerformanceReasonTagsText] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<MessageState>({ kind: "idle", text: "" });
@@ -244,11 +267,30 @@ export default function DashboardPage() {
     () => videos.find((video) => video.video_id === selectedVideoId) ?? null,
     [selectedVideoId, videos],
   );
+  const filteredVideos = useMemo(
+    () =>
+      videos.filter((video) => {
+        if (performanceFilter === "all") {
+          return true;
+        }
+        return (video.performance_label ?? "unknown") === performanceFilter;
+      }),
+    [performanceFilter, videos],
+  );
   const activeChannelPreset = useMemo(
     () => channelPresets.find((preset) => preset.channel_slug === channelSlug.trim()) ?? null,
     [channelPresets, channelSlug],
   );
+  const contentBrainWinningCount = useMemo(
+    () => contentBrainSignals.filter((signal) => signal.performance_label === "winning").length,
+    [contentBrainSignals],
+  );
+  const contentBrainWeakCount = useMemo(
+    () => contentBrainSignals.filter((signal) => signal.performance_label === "weak").length,
+    [contentBrainSignals],
+  );
   const selectedVideoVisualTemplate = selectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE;
+  const selectedVideoPerformanceLabel = selectedVideo?.performance_label ?? "unknown";
   const scriptEditable = selectedVideo?.stage_status === "script_approved";
   const pipelineCompleted =
     selectedVideo?.stage_status === "final_rendered" || selectedVideo?.status === "completed";
@@ -270,6 +312,19 @@ export default function DashboardPage() {
     const sections = [video.hook, ...(video.body_blocks ?? []), video.call_to_action].filter(Boolean);
     return sections.join("\n\n");
   }
+
+  function buildPerformanceReasonTagsText(video: VideoItem | null) {
+    if (!video?.performance_reason_tags?.length) {
+      return "";
+    }
+    return video.performance_reason_tags.join(", ");
+  }
+
+  const syncPerformanceForm = useCallback((video: VideoItem | null) => {
+    setPerformanceLabel(video?.performance_label ?? "unknown");
+    setPerformanceNotes(video?.performance_notes ?? "");
+    setPerformanceReasonTagsText(buildPerformanceReasonTagsText(video));
+  }, []);
 
   function canRunStep(video: VideoItem | null, stage: string) {
     if (!video) {
@@ -313,6 +368,10 @@ export default function DashboardPage() {
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean);
+  }
+
+  function parseReasonTagsInput(value: string) {
+    return parseTagsInput(value);
   }
 
   function sanitizeUploadStem(value: string) {
@@ -403,6 +462,23 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const loadContentBrainSignals = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
+    const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
+    const quiet = options?.quiet ?? false;
+    try {
+      const payload = await requestJson<ContentBrainSignalListResponse>(baseUrl, "/internal/videos/content-brain/signals");
+      const items = payload.items ?? [];
+      setContentBrainSignals(items);
+      if (!quiet) {
+        setMessage({ kind: "success", text: `Foram carregados ${items.length} sinais do ContentBrain local.` });
+      }
+    } catch (error) {
+      if (!quiet) {
+        setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao carregar sinais do ContentBrain." });
+      }
+    }
+  }, []);
+
   const loadVideos = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
     const quiet = options?.quiet ?? false;
@@ -418,9 +494,11 @@ export default function DashboardPage() {
       setSelectedVideoId(nextSelectedId);
       const nextSelectedVideo = items.find((item) => item.video_id === nextSelectedId) ?? null;
       setScriptDraft(buildScriptDraft(nextSelectedVideo));
+      syncPerformanceForm(nextSelectedVideo);
       setSelectedVisualTemplate(nextSelectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
       setPendingAssetId(null);
       setLatestJob(null);
+      void loadContentBrainSignals({ quiet: true });
       void loadLatestJob(nextSelectedId, { quiet: true });
       if (!quiet) {
         setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
@@ -432,7 +510,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadLatestJob]);
+  }, [loadContentBrainSignals, loadLatestJob, syncPerformanceForm]);
 
   const loadAssets = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
@@ -483,6 +561,7 @@ export default function DashboardPage() {
     setSelectedVideoId(nextVideo.video_id);
     selectedVideoIdRef.current = nextVideo.video_id;
     setScriptDraft(buildScriptDraft(nextVideo));
+    syncPerformanceForm(nextVideo);
     setSelectedVisualTemplate(nextVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
     setLatestJob(null);
@@ -493,6 +572,7 @@ export default function DashboardPage() {
     setSelectedVideoId(video.video_id);
     selectedVideoIdRef.current = video.video_id;
     setScriptDraft(buildScriptDraft(video));
+    syncPerformanceForm(video);
     setSelectedVisualTemplate(video.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
     setLatestJob(null);
@@ -637,6 +717,36 @@ export default function DashboardPage() {
       void loadVideos({ quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao salvar roteiro." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function savePerformanceSignal() {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de salvar o sinal." });
+      return;
+    }
+
+    setBusyAction("save-performance");
+    try {
+      const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/performance`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          performance_label: performanceLabel,
+          notes: performanceNotes,
+          reason_tags: parseReasonTagsInput(performanceReasonTagsText),
+        }),
+      });
+      mergeVideo(updated);
+      setPerformanceLabel(updated.performance_label ?? "unknown");
+      setPerformanceNotes(updated.performance_notes ?? "");
+      setPerformanceReasonTagsText(buildPerformanceReasonTagsText(updated));
+      setMessage({ kind: "success", text: `Sinal do video ${selectedVideoId} atualizado para ${updated.performance_label ?? "unknown"}.` });
+      void loadVideos({ quiet: true });
+      void loadContentBrainSignals({ quiet: true });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao salvar o sinal do video." });
     } finally {
       setBusyAction(null);
     }
@@ -1001,9 +1111,10 @@ export default function DashboardPage() {
       void loadVideos();
       void loadAssets({ quiet: true });
       void loadChannelPresets({ quiet: true });
+      void loadContentBrainSignals({ quiet: true });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadVideos, loadAssets, loadChannelPresets]);
+  }, [loadVideos, loadAssets, loadChannelPresets, loadContentBrainSignals]);
 
   return (
     <main className="shell">
@@ -1183,22 +1294,38 @@ export default function DashboardPage() {
         <section className="panel">
           <div className="panel-header">
             <h2>Videos recentes</h2>
-            <span className="panel-hint">{videos.length} itens</span>
+            <div className="panel-actions">
+              <span className="panel-hint">
+                {filteredVideos.length} de {videos.length} itens
+              </span>
+              <select value={performanceFilter} onChange={(event) => setPerformanceFilter(event.target.value)}>
+                <option value="all">Todos</option>
+                <option value="winning">Winning</option>
+                <option value="average">Average</option>
+                <option value="weak">Weak</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </div>
+          </div>
+          <div className="badge-row spaced">
+            <span className="badge success">winning: {contentBrainWinningCount}</span>
+            <span className="badge warning">weak: {contentBrainWeakCount}</span>
           </div>
 
           <div className="video-list">
-            {videos.length === 0 ? (
+            {filteredVideos.length === 0 ? (
               <div className="empty-state">
                 Nenhum video encontrado. Crie um video fake para comecar.
               </div>
             ) : (
-              videos.map((video) => {
+              filteredVideos.map((video) => {
                 const isSelected = video.video_id === selectedVideoId;
+                const performanceClass = video.performance_label ?? "unknown";
                 return (
                   <button
                     key={video.video_id}
                     type="button"
-                    className={`video-card${isSelected ? " selected" : ""}`}
+                    className={`video-card performance-${performanceClass}${isSelected ? " selected" : ""}`}
                     onClick={() => selectVideo(video)}
                   >
                     <div className="video-card-top">
@@ -1208,7 +1335,10 @@ export default function DashboardPage() {
                       </div>
                       <div className="badges">
                         <span className="badge">{video.status}</span>
-                <span className="badge accent">{video.stage_status}</span>
+                        <span className="badge accent">{video.stage_status}</span>
+                        <span className={`badge ${performanceClass === "winning" ? "success" : performanceClass === "weak" ? "warning" : "subtle"}`}>
+                          {video.performance_label ?? "unknown"}
+                        </span>
                         <span className="badge subtle">template: {video.visual_template ?? DEFAULT_VISUAL_TEMPLATE}</span>
                         {video.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
                       </div>
@@ -1221,6 +1351,7 @@ export default function DashboardPage() {
                       <span>asset_id: {video.asset_id ?? "pending"}</span>
                       <span>{video.preview_approved_at ? `preview aprovada em ${video.preview_approved_at}` : "preview pendente"}</span>
                     </div>
+                    {video.performance_notes ? <p className="helper">Sinal: {video.performance_notes}</p> : null}
                     <FileLinks apiBaseUrl={apiBaseUrl} video={video} />
                   </button>
                 );
@@ -1287,6 +1418,49 @@ export default function DashboardPage() {
                   <strong>Tom:</strong> {selectedVideo.style_tone}
                 </p>
               ) : null}
+              <div className="detail-asset">
+                <div className="panel-header">
+                  <h3>ContentBrain local</h3>
+                  <span className="panel-hint">label atual: {selectedVideoPerformanceLabel}</span>
+                </div>
+                <label className="field">
+                  <span>Performance label</span>
+                  <select value={performanceLabel} onChange={(event) => setPerformanceLabel(event.target.value)}>
+                    <option value="unknown">unknown</option>
+                    <option value="weak">weak</option>
+                    <option value="average">average</option>
+                    <option value="winning">winning</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Notes</span>
+                  <textarea
+                    value={performanceNotes}
+                    onChange={(event) => setPerformanceNotes(event.target.value)}
+                    rows={4}
+                    placeholder="Notas manuais sobre o que funcionou ou nao funcionou."
+                  />
+                </label>
+                <label className="field">
+                  <span>Reason tags</span>
+                  <input
+                    value={performanceReasonTagsText}
+                    onChange={(event) => setPerformanceReasonTagsText(event.target.value)}
+                    placeholder="hook, ritmo, CTA"
+                  />
+                </label>
+                <div className="panel-actions">
+                  <span className="panel-hint">Sinais sao locais e ajudam o Script Engine com contexto opcional.</span>
+                  <button
+                    type="button"
+                    className="primary secondary"
+                    onClick={() => void savePerformanceSignal()}
+                    disabled={busyAction !== null}
+                  >
+                    {busyAction === "save-performance" ? "Salvando..." : "Salvar sinal"}
+                  </button>
+                </div>
+              </div>
               <p>
                 <strong>Template visual atual:</strong> {selectedVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE}
               </p>

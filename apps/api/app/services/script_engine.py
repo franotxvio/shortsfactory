@@ -213,6 +213,7 @@ class ScriptEngineService:
         style_tone: str | None = None,
         default_call_to_action: str | None = None,
         target_duration_seconds: int | None = None,
+        content_brain_context: dict[str, object] | None = None,
     ) -> ScriptGenerationResult:
         llm_client, provider_name, record_cost_logs = self._get_llm_client(execution_mode)
         async with self.session.begin():
@@ -230,6 +231,7 @@ class ScriptEngineService:
                 style_tone=style_tone,
                 default_call_to_action=default_call_to_action,
                 target_duration_seconds=target_duration_seconds,
+                content_brain_context=content_brain_context,
             )
             policy = await self._policy_check(topic=topic, script=script, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
             normalized_script = _normalize_script_payload(
@@ -258,6 +260,7 @@ class ScriptEngineService:
                 "hook": hook.content,
                 "script": normalized_script,
                 "policy": policy.content,
+                "content_brain_context": content_brain_context,
             }
             script_row = Script(
                 video_id=video.id,
@@ -370,9 +373,21 @@ class ScriptEngineService:
         style_tone: str | None = None,
         default_call_to_action: str | None = None,
         target_duration_seconds: int | None = None,
+        content_brain_context: dict[str, object] | None = None,
     ) -> LLMResult:
         idea_text = str(idea.content.get("idea") or "")
         hook_text = str(hook.content.get("hook") or "")
+        content_brain_context_text = ""
+        if content_brain_context:
+            winning_examples = content_brain_context.get("winning_examples")
+            weak_examples = content_brain_context.get("weak_examples")
+            context_blob = {
+                "winning_examples": winning_examples,
+                "weak_examples": weak_examples,
+                "winning_count": content_brain_context.get("winning_count"),
+                "weak_count": content_brain_context.get("weak_count"),
+            }
+            content_brain_context_text = f" Local content-brain context: {json.dumps(context_blob, ensure_ascii=False, sort_keys=True)}."
         return await self._generate_operation(
             operation="script",
             topic=topic,
@@ -383,6 +398,7 @@ class ScriptEngineService:
                 "style_tone": style_tone,
                 "default_call_to_action": default_call_to_action,
                 "target_duration_seconds": target_duration_seconds,
+                "content_brain_context": content_brain_context,
             },
             system_prompt=(
                 "You write a complete short-form script in JSON only. "
@@ -394,6 +410,7 @@ class ScriptEngineService:
                 f"{f'Style tone: {style_tone!r}. ' if style_tone else ''}"
                 f"{f'Default CTA: {default_call_to_action!r}. ' if default_call_to_action else ''}"
                 f"{f'Target duration seconds: {target_duration_seconds}. ' if target_duration_seconds else ''}"
+                f"{content_brain_context_text}"
                 "Return JSON with keys title, hook, body_blocks, call_to_action, estimated_duration_seconds, style_tone, script and beats. "
                 "Use 3 to 5 short body_blocks and keep the final script concise enough for a Shorts video."
             ),
