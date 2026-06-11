@@ -1,7 +1,7 @@
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -10,7 +10,11 @@ from app.core.config import get_settings
 from app.api.deps import get_video_production_service
 from app.models.core import Channel, Video
 from app.schemas.video_production import (
+    AssetListResponse,
+    AssetRegisterRequest,
+    AssetResponse,
     VideoCreateRequest,
+    VideoAssetSelectionRequest,
     VideoListResponse,
     VideoPipelineResponse,
     VideoScriptUpdateRequest,
@@ -67,6 +71,10 @@ async def _with_demo_flag(
     payload: VideoPipelineResponse | VideoProductionResponse,
 ) -> VideoPipelineResponse | VideoProductionResponse:
     return payload.model_copy(update={"is_demo": await _is_demo_video(service, video_id=payload.video_id)})
+
+
+def _asset_response_from_record(record) -> AssetResponse:
+    return AssetResponse.model_validate(asdict(record))
 
 
 def _resolve_storage_file_path(path_value: str) -> Path:
@@ -147,6 +155,44 @@ async def reset_demo_videos(
     await session.flush()
     await _commit_if_available(service)
     return {"deleted_videos": deleted_videos, "deleted_scripts": deleted_scripts}
+
+
+@router.get("/assets", response_model=AssetListResponse)
+async def list_assets(
+    channel_slug: str | None = None,
+    topic: str | None = None,
+    tags: list[str] | None = Query(default=None),
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> AssetListResponse:
+    try:
+        assets = await service.list_assets(channel_slug=channel_slug, topic=topic, tags=tags)
+    except ValueError as error:
+        _raise_http_error(error)
+    return AssetListResponse(items=[_asset_response_from_record(asset) for asset in assets])
+
+
+@router.post("/assets/register-local", response_model=AssetResponse)
+async def register_local_asset(
+    payload: AssetRegisterRequest,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> AssetResponse:
+    try:
+        asset = await service.register_local_asset(
+            relative_path=payload.relative_path,
+            name=payload.name,
+            slug=payload.slug,
+            asset_type=payload.asset_type,
+            license_name=payload.license_name,
+            license_url=payload.license_url,
+            channel_slug=payload.channel_slug,
+            topic=payload.topic,
+            tags=payload.tags,
+        )
+        await _commit_if_available(service)
+    except ValueError as error:
+        await _rollback_if_available(service)
+        _raise_http_error(error)
+    return _asset_response_from_record(asset)
 
 
 @router.get("", response_model=VideoListResponse)
@@ -274,10 +320,18 @@ async def run_captions(
 @router.post("/{video_id}/asset", response_model=VideoPipelineResponse)
 async def select_asset(
     video_id: int,
+    payload: VideoAssetSelectionRequest | None = Body(default=None),
     service: VideoProductionService = Depends(get_video_production_service),
 ) -> VideoPipelineResponse:
     try:
-        await service.select_asset(video_id=video_id)
+        await service.select_asset(
+            video_id=video_id,
+            asset_id=payload.asset_id if payload is not None else None,
+            asset_slug=payload.asset_slug if payload is not None else None,
+            channel_slug=payload.channel_slug if payload is not None else None,
+            topic=payload.topic if payload is not None else None,
+            tags=payload.tags if payload is not None else None,
+        )
         await _commit_if_available(service)
         result = await service.get_status(video_id=video_id)
     except ValueError as error:

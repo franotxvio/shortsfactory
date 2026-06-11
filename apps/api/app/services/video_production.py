@@ -29,6 +29,13 @@ class VideoProductionResult:
     preview_path: str
     final_path: str
     asset_path: str
+    channel_slug: str | None = None
+    asset_name: str | None = None
+    asset_slug: str | None = None
+    asset_type: str | None = None
+    asset_channel_slug: str | None = None
+    asset_topic: str | None = None
+    asset_tags: list[str] | None = None
     hook: str | None = None
     body_blocks: list[str] | None = None
     call_to_action: str | None = None
@@ -40,6 +47,7 @@ class VideoProductionResult:
 class VideoPipelineState:
     video_id: int
     video_slug: str | None
+    channel_slug: str | None
     status: str
     stage_status: str
     script_id: int | None = None
@@ -50,6 +58,12 @@ class VideoPipelineState:
     preview_path: str | None = None
     final_path: str | None = None
     asset_path: str | None = None
+    asset_name: str | None = None
+    asset_slug: str | None = None
+    asset_type: str | None = None
+    asset_channel_slug: str | None = None
+    asset_topic: str | None = None
+    asset_tags: list[str] | None = None
     preview_approved_at: datetime | None = None
     script_text: str | None = None
     hook: str | None = None
@@ -105,19 +119,32 @@ class VideoProductionService:
         if auto_approve_preview:
             await self.approve_preview(video_id=video_id)
         final_result = await self.render_final(video_id=video_id)
+        final_state = await self.get_status(video_id=video_id)
         return VideoProductionResult(
             video_id=video_id,
+            channel_slug=final_state.channel_slug,
             audio_path=tts_result.audio_path,
             caption_path=caption_result.caption_path,
             preview_path=preview_result.output_path,
             final_path=final_result.output_path,
-            asset_path=asset_result.asset_path,
+            asset_path=final_state.asset_path or asset_result.asset_path,
+            asset_name=final_state.asset_name,
+            asset_slug=final_state.asset_slug,
+            asset_type=final_state.asset_type,
+            asset_channel_slug=final_state.asset_channel_slug,
+            asset_topic=final_state.asset_topic,
+            asset_tags=final_state.asset_tags,
+            hook=final_state.hook,
+            body_blocks=final_state.body_blocks,
+            call_to_action=final_state.call_to_action,
+            estimated_duration_seconds=final_state.estimated_duration_seconds,
+            style_tone=final_state.style_tone,
         )
 
     async def list_recent_videos(self, *, limit: int = 20) -> list[VideoPipelineState]:
         statement = (
             select(Video)
-            .options(selectinload(Video.asset))
+            .options(selectinload(Video.asset), selectinload(Video.channel))
             .order_by(Video.created_at.desc(), Video.id.desc())
             .limit(max(1, min(limit, 100)))
         )
@@ -125,12 +152,20 @@ class VideoProductionService:
         states: list[VideoPipelineState] = []
         for video in videos:
             script_metadata = await self._get_latest_script_metadata(video_id=video.id)
+            asset_details = self.asset_service.describe_asset(video.asset)
             states.append(
                 self._build_state(
                     video,
+                    channel_slug=video.channel.slug if video.channel is not None else None,
                     script_id=script_metadata["script_id"],
                     script_status=script_metadata["script_status"],
-                    asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+                    asset_path=asset_details.source_path if asset_details else None,
+                    asset_name=asset_details.name if asset_details else None,
+                    asset_slug=asset_details.slug if asset_details else None,
+                    asset_type=asset_details.asset_type if asset_details else None,
+                    asset_channel_slug=asset_details.channel_slug if asset_details else None,
+                    asset_topic=asset_details.topic if asset_details else None,
+                    asset_tags=asset_details.tags if asset_details else None,
                     script_text=script_metadata["script_text"],
                     hook=script_metadata["hook"],
                     body_blocks=script_metadata["body_blocks"],
@@ -177,7 +212,7 @@ class VideoProductionService:
     ) -> VideoPipelineState:
         statement = (
             select(Video)
-            .options(selectinload(Video.asset))
+            .options(selectinload(Video.asset), selectinload(Video.channel))
             .where(Video.id == video_id)
         )
         video = await self.session.scalar(statement)
@@ -189,6 +224,7 @@ class VideoProductionService:
         script = await self._get_latest_script(video_id=video_id)
         if script is None:
             raise ValueError(f"Script for video {video_id} not found")
+        asset_details = self.asset_service.describe_asset(video.asset)
 
         updated_script = self._normalize_updated_script(
             script_text=script_text,
@@ -211,9 +247,16 @@ class VideoProductionService:
 
         return self._build_state(
             video,
+            channel_slug=video.channel.slug if video.channel is not None else None,
             script_id=script.id,
             script_status=script.status.value,
-            asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+            asset_path=asset_details.source_path if asset_details else None,
+            asset_name=asset_details.name if asset_details else None,
+            asset_slug=asset_details.slug if asset_details else None,
+            asset_type=asset_details.asset_type if asset_details else None,
+            asset_channel_slug=asset_details.channel_slug if asset_details else None,
+            asset_topic=asset_details.topic if asset_details else None,
+            asset_tags=asset_details.tags if asset_details else None,
             script_text=str(updated_script["script"] or ""),
             hook=str(updated_script["hook"] or ""),
             body_blocks=list(updated_script["body_blocks"] or []),
@@ -237,8 +280,58 @@ class VideoProductionService:
             use_whisper=execution_mode == VideoExecutionMode.REAL,
         )
 
-    async def select_asset(self, *, video_id: int):
-        return await self.asset_service.select_local_asset(video_id=video_id)
+    async def select_asset(
+        self,
+        *,
+        video_id: int,
+        asset_id: int | None = None,
+        asset_slug: str | None = None,
+        channel_slug: str | None = None,
+        topic: str | None = None,
+        tags: list[str] | None = None,
+    ):
+        return await self.asset_service.select_local_asset(
+            video_id=video_id,
+            asset_id=asset_id,
+            asset_slug=asset_slug,
+            channel_slug=channel_slug,
+            topic=topic,
+            tags=tags,
+        )
+
+    async def list_assets(
+        self,
+        *,
+        channel_slug: str | None = None,
+        topic: str | None = None,
+        tags: list[str] | None = None,
+    ):
+        return await self.asset_service.list_assets(channel_slug=channel_slug, topic=topic, tags=tags)
+
+    async def register_local_asset(
+        self,
+        *,
+        relative_path: str,
+        name: str | None = None,
+        slug: str | None = None,
+        asset_type: str | None = None,
+        license_name: str = "generated-local",
+        license_url: str | None = None,
+        channel_slug: str | None = None,
+        topic: str | None = None,
+        tags: list[str] | None = None,
+    ):
+        return await self.asset_service.register_local_asset(
+            relative_path=relative_path,
+            name=name,
+            slug=slug,
+            asset_type=asset_type,
+            license_name=license_name,
+            license_url=license_url,
+            channel_slug=channel_slug,
+            topic=topic,
+            tags=tags,
+        )
 
     async def render_preview(self, *, video_id: int):
         return await self.render_worker.render_preview(video_id=video_id)
@@ -250,16 +343,24 @@ class VideoProductionService:
         return await self.render_worker.render_final(video_id=video_id)
 
     async def get_status(self, *, video_id: int) -> VideoPipelineState:
-        statement = select(Video).options(selectinload(Video.asset)).where(Video.id == video_id)
+        statement = select(Video).options(selectinload(Video.asset), selectinload(Video.channel)).where(Video.id == video_id)
         video = await self.session.scalar(statement)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
         script_metadata = await self._get_latest_script_metadata(video_id=video_id)
+        asset_details = self.asset_service.describe_asset(video.asset)
         return self._build_state(
             video,
+            channel_slug=video.channel.slug if video.channel is not None else None,
             script_id=script_metadata["script_id"],
             script_status=script_metadata["script_status"],
-            asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+            asset_path=asset_details.source_path if asset_details else None,
+            asset_name=asset_details.name if asset_details else None,
+            asset_slug=asset_details.slug if asset_details else None,
+            asset_type=asset_details.asset_type if asset_details else None,
+            asset_channel_slug=asset_details.channel_slug if asset_details else None,
+            asset_topic=asset_details.topic if asset_details else None,
+            asset_tags=asset_details.tags if asset_details else None,
             script_text=script_metadata["script_text"],
             hook=script_metadata["hook"],
             body_blocks=script_metadata["body_blocks"],
@@ -318,6 +419,7 @@ class VideoProductionService:
 
             state = self._build_state(
                 video,
+                channel_slug=channel_slug,
                 script_id=script.id,
                 script_status=script.status.value,
                 asset_path=None,
@@ -346,11 +448,13 @@ class VideoProductionService:
             video_title=video_title,
             execution_mode=VideoExecutionMode.REAL,
         )
-        video = await self.session.get(Video, result.video_id)
+        statement = select(Video).options(selectinload(Video.channel), selectinload(Video.asset)).where(Video.id == result.video_id)
+        video = await self.session.scalar(statement)
         if video is None:
             raise ValueError(f"Video {result.video_id} not found")
         return self._build_state(
             video,
+            channel_slug=video.channel.slug if video.channel is not None else None,
             script_id=result.script_id,
             script_status=result.script_status,
             asset_path=None,
@@ -390,9 +494,16 @@ class VideoProductionService:
         self,
         video: Video,
         *,
+        channel_slug: str | None = None,
         script_id: int | None = None,
         script_status: str | None = None,
         asset_path: str | None = None,
+        asset_name: str | None = None,
+        asset_slug: str | None = None,
+        asset_type: str | None = None,
+        asset_channel_slug: str | None = None,
+        asset_topic: str | None = None,
+        asset_tags: list[str] | None = None,
         script_text: str | None = None,
         hook: str | None = None,
         body_blocks: list[str] | None = None,
@@ -403,6 +514,7 @@ class VideoProductionService:
         return VideoPipelineState(
             video_id=video.id,
             video_slug=video.slug,
+            channel_slug=channel_slug,
             status=video.status.value,
             stage_status=video.stage_status.value,
             script_id=script_id,
@@ -413,6 +525,12 @@ class VideoProductionService:
             preview_path=video.preview_path,
             final_path=video.final_path,
             asset_path=asset_path,
+            asset_name=asset_name,
+            asset_slug=asset_slug,
+            asset_type=asset_type,
+            asset_channel_slug=asset_channel_slug,
+            asset_topic=asset_topic,
+            asset_tags=asset_tags,
             preview_approved_at=video.preview_approved_at,
             script_text=script_text,
             hook=hook,
@@ -425,11 +543,18 @@ class VideoProductionService:
     def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
         return VideoProductionResult(
             video_id=state.video_id,
+            channel_slug=state.channel_slug,
             audio_path=state.audio_path or "",
             caption_path=state.caption_path or "",
             preview_path=state.preview_path or "",
             final_path=state.final_path or "",
             asset_path=state.asset_path or "",
+            asset_name=state.asset_name,
+            asset_slug=state.asset_slug,
+            asset_type=state.asset_type,
+            asset_channel_slug=state.asset_channel_slug,
+            asset_topic=state.asset_topic,
+            asset_tags=state.asset_tags,
             hook=state.hook,
             body_blocks=state.body_blocks,
             call_to_action=state.call_to_action,

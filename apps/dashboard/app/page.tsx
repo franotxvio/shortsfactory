@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 type VideoItem = {
   video_id: number;
   video_slug?: string | null;
+  channel_slug?: string | null;
   status: string;
   stage_status: string;
   is_demo?: boolean;
@@ -16,6 +17,12 @@ type VideoItem = {
   preview_path?: string | null;
   final_path?: string | null;
   asset_path?: string | null;
+  asset_name?: string | null;
+  asset_slug?: string | null;
+  asset_type?: string | null;
+  asset_channel_slug?: string | null;
+  asset_topic?: string | null;
+  asset_tags?: string[] | null;
   preview_approved_at?: string | null;
   script_text?: string | null;
   hook?: string | null;
@@ -25,8 +32,27 @@ type VideoItem = {
   style_tone?: string | null;
 };
 
+type AssetItem = {
+  asset_id: number;
+  asset_type: string;
+  name: string;
+  slug: string;
+  source_path?: string | null;
+  license_name: string;
+  license_url?: string | null;
+  status: string;
+  channel_slug?: string | null;
+  topic?: string | null;
+  tags?: string[] | null;
+  is_default?: boolean;
+};
+
 type VideoListResponse = {
   items: VideoItem[];
+};
+
+type AssetListResponse = {
+  items: AssetItem[];
 };
 
 type MessageState = {
@@ -74,6 +100,22 @@ function PathLine({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
+function AssetTags({ tags }: { tags?: string[] | null }) {
+  if (!tags?.length) {
+    return null;
+  }
+
+  return (
+    <div className="badge-row">
+      {tags.map((tag) => (
+        <span key={tag} className="badge subtle">
+          {tag}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function FileLinks({
   apiBaseUrl,
   video,
@@ -117,6 +159,7 @@ export default function DashboardPage() {
   const [channelName, setChannelName] = useState(DEFAULT_FORM.channelName);
   const [videoTitle, setVideoTitle] = useState(DEFAULT_FORM.videoTitle);
   const [videos, setVideos] = useState<VideoItem[]>([]);
+  const [assets, setAssets] = useState<AssetItem[]>([]);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
   const [scriptDraft, setScriptDraft] = useState("");
@@ -161,6 +204,10 @@ export default function DashboardPage() {
     return currentIndex === targetIndex - 1;
   }
 
+  function canSelectAsset(video: VideoItem | null) {
+    return video?.stage_status === "caption_done" || video?.stage_status === "asset_ready";
+  }
+
   useEffect(() => {
     apiBaseUrlRef.current = apiBaseUrl;
   }, [apiBaseUrl]);
@@ -192,6 +239,23 @@ export default function DashboardPage() {
       }
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadAssets = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
+    const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
+    const quiet = options?.quiet ?? false;
+    try {
+      const payload = await requestJson<AssetListResponse>(baseUrl, "/internal/videos/assets");
+      const items = payload.items ?? [];
+      setAssets(items);
+      if (!quiet) {
+        setMessage({ kind: "success", text: `Foram carregados ${items.length} assets locais.` });
+      }
+    } catch (error) {
+      if (!quiet) {
+        setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao carregar assets." });
+      }
     }
   }, []);
 
@@ -318,6 +382,35 @@ export default function DashboardPage() {
     }
   }
 
+  async function applyAsset(asset: AssetItem) {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de escolher um asset." });
+      return;
+    }
+    if (!canSelectAsset(selectedVideo)) {
+      setMessage({ kind: "error", text: "Asset so pode ser trocado antes do preview, depois das captions." });
+      return;
+    }
+
+    setBusyAction(`asset-${asset.asset_id}`);
+    try {
+      const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/asset`, {
+        method: "POST",
+        body: JSON.stringify({
+          asset_id: asset.asset_id,
+        }),
+      });
+      mergeVideo(updated);
+      setMessage({ kind: "success", text: `Asset ${asset.name} aplicado ao video ${selectedVideoId}.` });
+      void loadVideos({ quiet: true });
+      void loadAssets({ quiet: true });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao aplicar asset." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function runPipelineStep(step: "tts" | "captions" | "asset" | "preview" | "approve-preview" | "final") {
     if (selectedVideoId === null) {
       setMessage({ kind: "error", text: "Selecione um video antes de executar uma etapa." });
@@ -357,7 +450,8 @@ export default function DashboardPage() {
       final: "preview_approved",
     };
 
-    if (!canRunStep(selectedVideo, stageRequirements[step])) {
+    const canRun = step === "asset" ? canSelectAsset(selectedVideo) : canRunStep(selectedVideo, stageRequirements[step]);
+    if (!canRun) {
       setMessage({
         kind: "error",
         text: `Nao foi possivel executar ${stepLabels[step]}. Verifique a ordem do pipeline e o stage_status atual.`,
@@ -378,6 +472,7 @@ export default function DashboardPage() {
       setScriptDraft(buildScriptDraft(updated));
       setMessage({ kind: "success", text: `${stepLabels[step]} executado com sucesso.` });
       void loadVideos({ quiet: true });
+      void loadAssets({ quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : `Falha ao executar ${stepLabels[step]}.` });
     } finally {
@@ -388,9 +483,10 @@ export default function DashboardPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadVideos();
+      void loadAssets({ quiet: true });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadVideos]);
+  }, [loadVideos, loadAssets]);
 
   return (
     <main className="shell">
@@ -410,7 +506,14 @@ export default function DashboardPage() {
             <input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} />
           </label>
           <div className="connection-actions">
-            <button type="button" onClick={() => void loadVideos()} disabled={loading}>
+            <button
+              type="button"
+              onClick={() => {
+                void loadVideos();
+                void loadAssets({ quiet: true });
+              }}
+              disabled={loading}
+            >
               {loading ? "Atualizando..." : "Atualizar lista"}
             </button>
             <button type="button" onClick={refreshSelectedStatus} disabled={busyAction !== null}>
@@ -484,10 +587,10 @@ export default function DashboardPage() {
               videos.map((video) => {
                 const isSelected = video.video_id === selectedVideoId;
                 return (
-                    <button
-                      key={video.video_id}
-                      type="button"
-                      className={`video-card${isSelected ? " selected" : ""}`}
+                  <button
+                    key={video.video_id}
+                    type="button"
+                    className={`video-card${isSelected ? " selected" : ""}`}
                     onClick={() => selectVideo(video)}
                   >
                     <div className="video-card-top">
@@ -532,6 +635,11 @@ export default function DashboardPage() {
                 <span className="badge accent">{selectedVideo.stage_status}</span>
                 {selectedVideo.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
               </div>
+              {selectedVideo.channel_slug ? (
+                <p>
+                  <strong>Canal:</strong> {selectedVideo.channel_slug}
+                </p>
+              ) : null}
               <p>
                 <strong>Script:</strong> {selectedVideo.script_id ?? "pendente"} / {selectedVideo.script_status ?? "pendente"}
               </p>
@@ -568,6 +676,27 @@ export default function DashboardPage() {
               <p>
                 <strong>Asset:</strong> {selectedVideo.asset_id ?? "pendente"}
               </p>
+              {selectedVideo.asset_name || selectedVideo.asset_slug || selectedVideo.asset_type ? (
+                <div className="detail-asset">
+                  <p>
+                    <strong>Asset atual:</strong> {selectedVideo.asset_name ?? selectedVideo.asset_slug ?? "sem nome"}
+                  </p>
+                  <p>
+                    <strong>Slug:</strong> {selectedVideo.asset_slug ?? "pendente"}
+                  </p>
+                  <p>
+                    <strong>Tipo:</strong> {selectedVideo.asset_type ?? "pendente"}
+                  </p>
+                  <p>
+                    <strong>Grupo:</strong>{" "}
+                    {selectedVideo.asset_channel_slug ?? selectedVideo.channel_slug ?? "sem canal"}
+                  </p>
+                  <p>
+                    <strong>Tema:</strong> {selectedVideo.asset_topic ?? "pendente"}
+                  </p>
+                  <AssetTags tags={selectedVideo.asset_tags} />
+                </div>
+              ) : null}
             </div>
 
             <div className="script-editor">
@@ -615,7 +744,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => void runPipelineStep("asset")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "caption_done")}
+                  disabled={busyAction !== null || !canSelectAsset(selectedVideo)}
                 >
                   {busyAction === "asset" ? "Selecionando..." : "Selecionar asset"}
                 </button>
@@ -644,6 +773,62 @@ export default function DashboardPage() {
               <p className="helper">
                 Cada botao segue a ordem real do pipeline. Se o stage atual nao permitir a etapa, a API responde com erro claro.
               </p>
+            </div>
+
+            <div className="panel asset-panel">
+              <div className="panel-header">
+                <h3>Assets locais</h3>
+                <div className="panel-actions">
+                  <span className="panel-hint">{assets.length} itens</span>
+                  <button type="button" className="ghost" onClick={() => void loadAssets()} disabled={busyAction !== null}>
+                    Recarregar
+                  </button>
+                </div>
+              </div>
+              <p className="helper">
+                Use um asset local antes do preview. O fallback padrao continua disponivel se nada for escolhido.
+              </p>
+              <div className="asset-list">
+                {assets.length === 0 ? (
+                  <div className="empty-state">Nenhum asset local cadastrado. O fallback padrao sera usado.</div>
+                ) : (
+                  assets.map((asset) => {
+                    const isSelected = selectedVideo?.asset_id === asset.asset_id;
+                    const isBusy = busyAction === `asset-${asset.asset_id}`;
+                    const canUse = canSelectAsset(selectedVideo) || isSelected;
+                    return (
+                      <article key={asset.asset_id} className={`asset-card${isSelected ? " selected" : ""}`}>
+                        <div className="video-card-top">
+                          <div>
+                            <p className="video-id">Asset #{asset.asset_id}</p>
+                            <h3>{asset.name}</h3>
+                          </div>
+                          <div className="badges">
+                            <span className="badge">{asset.asset_type}</span>
+                            {asset.is_default ? <span className="badge demo">DEFAULT</span> : null}
+                          </div>
+                        </div>
+                        <p className="helper">Slug: {asset.slug}</p>
+                        <p className="helper">Arquivo: {asset.source_path ?? "sem caminho"}</p>
+                        <p className="helper">Licenca: {asset.license_name}</p>
+                        {asset.channel_slug ? <p className="helper">Canal: {asset.channel_slug}</p> : null}
+                        {asset.topic ? <p className="helper">Tema: {asset.topic}</p> : null}
+                        <AssetTags tags={asset.tags} />
+                        <div className="asset-actions">
+                          <button
+                            type="button"
+                            className="primary secondary"
+                            onClick={() => void applyAsset(asset)}
+                            disabled={!canUse || busyAction !== null || isSelected}
+                          >
+                            {isBusy ? "Aplicando..." : isSelected ? "Asset atual" : "Usar este asset"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })
+                )}
+              </div>
             </div>
 
             <div className="paths">
