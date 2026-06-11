@@ -53,15 +53,19 @@ async def produce_video(
     service: VideoProductionService = Depends(get_video_production_service),
 ) -> VideoProductionResponse:
     try:
-        result = await service.produce_full_video(
+        produced = await service.produce_full_video(
             video_id=video_id,
             auto_approve_preview=payload.auto_approve_preview,
         )
         await _commit_if_available(service)
+        get_status = getattr(service, "get_status", None)
+        if callable(get_status):
+            result = await get_status(video_id=video_id)
+            return VideoProductionResponse.model_validate(asdict(result))
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoProductionResponse.model_validate(asdict(result))
+    return VideoProductionResponse.model_validate(asdict(produced))
 
 
 @router.post("/test", response_model=VideoPipelineResponse)

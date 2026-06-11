@@ -77,6 +77,15 @@ class VideoProductionService:
         self.render_worker = render_worker or RenderWorker(session, settings=self.settings)
 
     async def produce_full_video(self, *, video_id: int, auto_approve_preview: bool = True) -> VideoProductionResult:
+        statement = select(Video.status, Video.stage_status).where(Video.id == video_id)
+        row = (await self.session.execute(statement)).one_or_none()
+        if row is None:
+            raise ValueError(f"Video {video_id} not found")
+        current_status, current_stage_status = row
+        if current_stage_status == VideoStageStatus.FINAL_RENDERED or current_status == WorkflowStatus.COMPLETED:
+            current_state = await self.get_status(video_id=video_id)
+            return self._build_production_result_from_state(current_state)
+
         tts_result = await self.run_tts(video_id=video_id, execution_mode=VideoExecutionMode.FAKE)
         caption_result = await self.generate_captions(video_id=video_id, execution_mode=VideoExecutionMode.FAKE)
         asset_result = await self.select_asset(video_id=video_id)
@@ -294,6 +303,16 @@ class VideoProductionService:
             final_path=video.final_path,
             asset_path=asset_path,
             preview_approved_at=video.preview_approved_at,
+        )
+
+    def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
+        return VideoProductionResult(
+            video_id=state.video_id,
+            audio_path=state.audio_path or "",
+            caption_path=state.caption_path or "",
+            preview_path=state.preview_path or "",
+            final_path=state.final_path or "",
+            asset_path=state.asset_path or "",
         )
 
     def _build_fake_script(self, *, topic: str) -> str:

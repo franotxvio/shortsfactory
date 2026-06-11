@@ -326,6 +326,58 @@ async def test_internal_video_list_returns_recent_items(db_session, temp_databas
     assert item.final_path is not None
 
 
+@pytest.mark.asyncio
+async def test_internal_video_produce_is_idempotent_after_completion(db_session, temp_database_url: str) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            first_produce = client.post(
+                f"/internal/videos/{created.video_id}/produce",
+                json={"auto_approve_preview": True, "execution_mode": "fake"},
+            )
+            assert first_produce.status_code == 200
+            first_state = VideoPipelineResponse.model_validate(first_produce.json())
+            assert first_state.stage_status == VideoStageStatus.FINAL_RENDERED.value
+
+            second_produce = client.post(
+                f"/internal/videos/{created.video_id}/produce",
+                json={"auto_approve_preview": True, "execution_mode": "fake"},
+            )
+            assert second_produce.status_code == 200
+            second_state = VideoPipelineResponse.model_validate(second_produce.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert second_state.stage_status == VideoStageStatus.FINAL_RENDERED.value
+    assert second_state.status == WorkflowStatus.COMPLETED.value
+    assert second_state.audio_path == first_state.audio_path
+    assert second_state.caption_path == first_state.caption_path
+    assert second_state.preview_path == first_state.preview_path
+    assert second_state.final_path == first_state.final_path
+
+
 def test_internal_manual_video_real_mode_requires_api_key() -> None:
     with TestClient(app) as client:
         response = client.post(

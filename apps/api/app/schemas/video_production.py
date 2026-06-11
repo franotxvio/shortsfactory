@@ -19,6 +19,8 @@ class VideoProductionResponse(BaseModel):
     preview_path: str
     final_path: str
     asset_path: str
+    status: str | None = None
+    stage_status: str | None = None
 
 
 class VideoCreateRequest(BaseModel):

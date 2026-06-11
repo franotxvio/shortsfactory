@@ -84,13 +84,16 @@ export default function DashboardPage() {
     () => videos.find((video) => video.video_id === selectedVideoId) ?? null,
     [selectedVideoId, videos],
   );
+  const pipelineCompleted =
+    selectedVideo?.stage_status === "final_rendered" || selectedVideo?.status === "completed";
 
   useEffect(() => {
     apiBaseUrlRef.current = apiBaseUrl;
   }, [apiBaseUrl]);
 
-  const loadVideos = useCallback(async (nextBaseUrl?: string) => {
-    const baseUrl = nextBaseUrl ?? apiBaseUrlRef.current;
+  const loadVideos = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
+    const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
+    const quiet = options?.quiet ?? false;
     setLoading(true);
     try {
       const payload = await requestJson<VideoListResponse>(baseUrl, "/internal/videos");
@@ -102,9 +105,13 @@ export default function DashboardPage() {
         }
         return items[0]?.video_id ?? null;
       });
-      setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
+      if (!quiet) {
+        setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
+      }
     } catch (error) {
-      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao carregar videos." });
+      if (!quiet) {
+        setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao carregar videos." });
+      }
     } finally {
       setLoading(false);
     }
@@ -138,7 +145,7 @@ export default function DashboardPage() {
       });
       mergeVideo(created);
       setMessage({ kind: "success", text: `Video ${created.video_id} criado em modo fake.` });
-      await loadVideos();
+      void loadVideos({ quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao criar video fake." });
     } finally {
@@ -154,6 +161,13 @@ export default function DashboardPage() {
 
     setBusyAction("produce");
     try {
+      if (pipelineCompleted) {
+        setMessage({
+          kind: "success",
+          text: `Video ${selectedVideoId} ja esta concluido. Mostrando o estado atual.`,
+        });
+        return;
+      }
       const produced = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/produce`, {
         method: "POST",
         body: JSON.stringify({
@@ -163,7 +177,7 @@ export default function DashboardPage() {
       });
       mergeVideo(produced);
       setMessage({ kind: "success", text: `Pipeline concluido para o video ${selectedVideoId}.` });
-      await loadVideos();
+      void loadVideos({ quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao rodar o pipeline fake." });
     } finally {
@@ -258,9 +272,15 @@ export default function DashboardPage() {
             <h2>Pipeline fake</h2>
             <span className="panel-hint">video selecionado</span>
           </div>
-          <button type="button" className="primary secondary" onClick={produceFakePipeline} disabled={busyAction !== null}>
-            {busyAction === "produce" ? "Processando..." : "Produzir pipeline fake"}
+          <button
+            type="button"
+            className="primary secondary"
+            onClick={produceFakePipeline}
+            disabled={busyAction !== null || pipelineCompleted}
+          >
+            {pipelineCompleted ? "Pipeline concluido" : busyAction === "produce" ? "Processando..." : "Produzir pipeline fake"}
           </button>
+          {pipelineCompleted ? <p className="helper">Este video ja esta finalizado. Atualize ou escolha outro item para rodar novamente.</p> : null}
 
           <div className={`message ${message.kind}`}>
             {message.text || "Pronto para operar o pipeline local."}
