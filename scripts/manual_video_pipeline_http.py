@@ -55,7 +55,29 @@ def _print_state(label: str, payload: dict[str, Any]) -> None:
             print(f"  {field}={value}")
 
 
-def run_pipeline(base_url: str) -> None:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the local video pipeline against the FastAPI API.")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="API base URL, default: http://127.0.0.1:8000")
+    parser.add_argument(
+        "--mode",
+        choices=("fake", "real"),
+        default="fake",
+        help="Pipeline execution mode, default: fake",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        run_pipeline_with_mode(args.base_url, args.mode)
+        return 0
+    except Exception as exc:  # noqa: BLE001 - manual operator script
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+def run_pipeline_with_mode(base_url: str, mode: str) -> None:
     health = _request_json(base_url, "GET", "/health")
     if health.body.get("status") != "ok":
         raise RuntimeError(f"Health check failed: {health.body}")
@@ -70,7 +92,7 @@ def run_pipeline(base_url: str) -> None:
             "channel_slug": "manual-test",
             "channel_name": "Manual Test",
             "video_title": "Teste manual",
-            "execution_mode": "fake",
+            "execution_mode": mode,
         },
     )
     create_state = create_result.body
@@ -82,7 +104,7 @@ def run_pipeline(base_url: str) -> None:
         base_url,
         "POST",
         f"/internal/videos/{video_id}/tts",
-        {"execution_mode": "fake"},
+        {"execution_mode": mode},
     ).body
     _print_state("tts", tts_state)
 
@@ -90,7 +112,7 @@ def run_pipeline(base_url: str) -> None:
         base_url,
         "POST",
         f"/internal/videos/{video_id}/captions",
-        {"execution_mode": "fake"},
+        {"execution_mode": mode},
     ).body
     _print_state("captions", captions_state)
 
@@ -108,22 +130,6 @@ def run_pipeline(base_url: str) -> None:
 
     status_state = _request_json(base_url, "GET", f"/internal/videos/{video_id}/status").body
     _print_state("status", status_state)
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the local video pipeline against the FastAPI API.")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="API base URL, default: http://127.0.0.1:8000")
-    return parser.parse_args()
-
-
-def main() -> int:
-    args = parse_args()
-    try:
-        run_pipeline(args.base_url)
-        return 0
-    except Exception as exc:  # noqa: BLE001 - manual operator script
-        print(str(exc), file=sys.stderr)
-        return 1
 
 
 if __name__ == "__main__":

@@ -126,6 +126,19 @@ Ele imprime:
 - `preview_path`
 - `final_path`
 
+Para validar OpenAI de forma controlada com custo baixo:
+
+```bash
+$env:OPENAI_API_KEY="sk-..."
+python scripts/manual_video_pipeline_http.py --mode real
+```
+
+O modo `real`:
+
+- nao muda o padrao `fake`
+- falha com erro claro se `OPENAI_API_KEY` nao estiver configurada
+- registra `cost_logs` quando usa provider real no TTS ou no gerador de roteiro
+
 ## 6. Observacoes
 
 - O fluxo manual nao chama OpenAI real por padrao.

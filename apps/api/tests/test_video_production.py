@@ -14,10 +14,11 @@ from app.api.deps import get_async_session, get_video_production_service
 from app.core.config import Settings
 from app.main import app
 from app.models.core import AssetPool, CostLog, Script, Video
-from app.models.enums import VideoStageStatus, WorkflowStatus
+from app.models.enums import VideoExecutionMode, VideoStageStatus, WorkflowStatus
 from app.schemas.video_production import VideoPipelineResponse
 from app.schemas.video_production import VideoProductionResponse
 from app.services.llm_types import LLMResult, LLMUsage
+from app.services.openai_client import OpenAIJSONClient
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
 from app.services.video_production import VideoProductionResult, VideoProductionService
@@ -284,3 +285,87 @@ def test_internal_manual_video_real_mode_requires_api_key() -> None:
         )
 
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_fake_pipeline_does_not_instantiate_openai(db_session, tmp_path, monkeypatch) -> None:
+    await _create_approved_script(db_session)
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+
+    def _fail_init(*args, **kwargs):  # noqa: ANN001, ANN003
+        raise AssertionError("OpenAIJSONClient should not be instantiated in fake mode")
+
+    monkeypatch.setattr(OpenAIJSONClient, "__init__", _fail_init)
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+    service = VideoProductionService(session=db_session, settings=settings)
+    result = await service.produce_full_video(video_id=video.id)
+
+    assert Path(result.audio_path).exists()
+    assert Path(result.final_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_real_pipeline_without_api_key_fails_clear(db_session, tmp_path) -> None:
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        await service.create_local_test_video(
+            topic="Como aprender Python",
+            channel_slug="real-mode-test",
+            channel_name="Real Mode Test",
+            video_title="Teste real",
+            execution_mode=VideoExecutionMode.REAL,
+        )
+
+
+@pytest.mark.asyncio
+async def test_real_tts_with_mock_records_cost_log(db_session, tmp_path) -> None:
+    await _create_approved_script(db_session)
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+
+    audio_bytes = _build_mp3_bytes(tmp_path)
+    fake_tts_client = FakeTTSClient(audio_bytes=audio_bytes)
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+        openai_api_key="sk-test",
+    )
+
+    tts_worker = TTSWorker(session=db_session, client=fake_tts_client, settings=settings, record_cost_log=True)
+    result = await tts_worker.generate(video_id=video.id)
+
+    assert Path(result.audio_path).exists()
+
+    cost_log = await db_session.scalar(select(CostLog).where(CostLog.video_id == video.id, CostLog.operation == "tts"))
+    assert cost_log is not None
+    assert cost_log.provider == "openai"
+    assert cost_log.operation == "tts"

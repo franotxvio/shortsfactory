@@ -31,7 +31,7 @@ class TTSWorker:
     ) -> None:
         self.session = session
         self.settings = settings or get_settings()
-        self.client = client or OpenAIJSONClient(self.settings)
+        self.client = client
         self.record_cost_log = record_cost_log
 
     async def generate(self, *, video_id: int) -> TTSResult:
@@ -45,7 +45,8 @@ class TTSWorker:
         audio_path = self.settings.audio_output_path / f"{video.slug}.mp3"
         ensure_parent_dir(audio_path)
 
-        audio_bytes, request_id = await self.client.generate_tts_audio(
+        client = self._get_client()
+        audio_bytes, request_id = await client.generate_tts_audio(
             text=script.content,
             model=self.settings.openai_tts_model,
             voice=self.settings.openai_tts_voice,
@@ -69,6 +70,14 @@ class TTSWorker:
         await self.session.flush()
 
         return TTSResult(video_id=video.id, audio_path=str(audio_path), cost_usd=cost_usd)
+
+    def _get_client(self) -> OpenAIJSONClient:
+        if self.client is not None:
+            return self.client
+        if not self.settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required for real TTS execution")
+        self.client = OpenAIJSONClient(self.settings)
+        return self.client
 
     async def _get_approved_script(self, video_id: int) -> Script:
         statement = (
