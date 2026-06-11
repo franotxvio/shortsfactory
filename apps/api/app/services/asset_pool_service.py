@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -91,7 +92,7 @@ class AssetPoolService:
         license_url: str | None = None,
         channel_slug: str | None = None,
         topic: str | None = None,
-        tags: list[str] | None = None,
+        tags: list[str] | str | None = None,
     ) -> AssetPoolRecord:
         resolved_path = self._resolve_asset_path(relative_path)
         storage_path = self._storage_relative_path(resolved_path)
@@ -147,6 +148,56 @@ class AssetPoolService:
             },
         )
         return self._describe_asset(asset)
+
+    async def register_uploaded_asset(
+        self,
+        *,
+        file_bytes: bytes,
+        original_filename: str | None,
+        name: str | None = None,
+        slug: str | None = None,
+        asset_type: str | None = None,
+        license_name: str = "generated-local",
+        license_url: str | None = None,
+        channel_slug: str | None = None,
+        topic: str | None = None,
+        tags: list[str] | str | None = None,
+    ) -> AssetPoolRecord:
+        if not file_bytes:
+            raise ValueError("Uploaded file is empty")
+
+        safe_filename = Path(original_filename or "asset.png").name
+        file_suffix = Path(safe_filename).suffix.lower()
+        if file_suffix == ".mp4":
+            raise ValueError("Background video assets (.mp4) are not supported yet")
+        if file_suffix not in _ALLOWED_ASSET_SUFFIXES:
+            raise ValueError("Unsupported asset file type")
+
+        normalized_stem = self._normalize_slug(Path(safe_filename).stem or "asset")
+        normalized_filename = f"{normalized_stem}{file_suffix}"
+        destination = self._build_upload_destination(normalized_filename)
+        ensure_parent_dir(destination)
+        destination.write_bytes(file_bytes)
+
+        try:
+            return await self.register_local_asset(
+                relative_path=self._storage_relative_path(destination),
+                name=name or Path(safe_filename).stem.replace("-", " ").replace("_", " ").title(),
+                slug=slug or normalized_stem,
+                asset_type=asset_type or "background_image",
+                license_name=license_name,
+                license_url=license_url,
+                channel_slug=channel_slug,
+                topic=topic,
+                tags=tags,
+            )
+        except Exception:
+            try:
+                if destination.exists():
+                    destination.unlink()
+            except OSError:
+                pass
+            raise
 
     async def select_local_asset(
         self,
@@ -473,3 +524,19 @@ class AssetPoolService:
             str(asset_path),
         ]
         run_command(command)
+
+    def _build_upload_destination(self, filename: str) -> Path:
+        upload_dir = self.settings.asset_pool_path / "uploads"
+        ensure_parent_dir(upload_dir / filename)
+        candidate = upload_dir / filename
+        if not candidate.exists():
+            return candidate
+
+        stem = candidate.stem
+        suffix = candidate.suffix
+        for _ in range(50):
+            unique_name = f"{stem}-{uuid4().hex[:8]}{suffix}"
+            candidate = upload_dir / unique_name
+            if not candidate.exists():
+                return candidate
+        raise ValueError("Could not generate a unique filename for the uploaded asset")

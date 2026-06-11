@@ -1,7 +1,7 @@
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -208,6 +208,41 @@ async def register_local_asset(
             channel_slug=payload.channel_slug,
             topic=payload.topic,
             tags=payload.tags,
+        )
+        await _commit_if_available(service)
+    except ValueError as error:
+        await _rollback_if_available(service)
+        _raise_http_error(error)
+    return _asset_response_from_record(asset)
+
+
+@router.post("/assets/upload", response_model=AssetResponse)
+async def upload_local_asset(
+    request: Request,
+    filename: str = Query(..., min_length=1),
+    name: str | None = Query(default=None),
+    slug: str | None = Query(default=None),
+    asset_type: str | None = Query(default="background_image"),
+    license_name: str = Query(default="generated-local"),
+    license_url: str | None = Query(default=None),
+    channel_slug: str | None = Query(default=None),
+    topic: str | None = Query(default=None),
+    tags: str | None = Query(default=None),
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> AssetResponse:
+    try:
+        uploaded = await request.body()
+        asset = await service.register_uploaded_asset(
+            file_bytes=uploaded,
+            original_filename=filename,
+            name=name,
+            slug=slug,
+            asset_type=asset_type,
+            license_name=license_name,
+            license_url=license_url,
+            channel_slug=channel_slug,
+            topic=topic,
+            tags=tags,
         )
         await _commit_if_available(service)
     except ValueError as error:

@@ -107,6 +107,13 @@ const DEFAULT_ASSET_FORM = {
   tagsText: "python, background",
 };
 
+const DEFAULT_UPLOAD_FORM = {
+  licenseName: "generated-local",
+  channelSlug: "",
+  topic: "",
+  tagsText: "",
+};
+
 const DEFAULT_VISUAL_TEMPLATE = "default";
 
 function normalizeBaseUrl(value: string) {
@@ -222,6 +229,13 @@ export default function DashboardPage() {
   const [assetChannelSlug, setAssetChannelSlug] = useState(DEFAULT_ASSET_FORM.channelSlug);
   const [assetTopic, setAssetTopic] = useState(DEFAULT_ASSET_FORM.topic);
   const [assetTagsText, setAssetTagsText] = useState(DEFAULT_ASSET_FORM.tagsText);
+  const [assetUploadFile, setAssetUploadFile] = useState<File | null>(null);
+  const [assetUploadName, setAssetUploadName] = useState("");
+  const [assetUploadSlug, setAssetUploadSlug] = useState("");
+  const [assetUploadLicenseName, setAssetUploadLicenseName] = useState(DEFAULT_UPLOAD_FORM.licenseName);
+  const [assetUploadChannelSlug, setAssetUploadChannelSlug] = useState(DEFAULT_UPLOAD_FORM.channelSlug);
+  const [assetUploadTopic, setAssetUploadTopic] = useState(DEFAULT_UPLOAD_FORM.topic);
+  const [assetUploadTagsText, setAssetUploadTagsText] = useState(DEFAULT_UPLOAD_FORM.tagsText);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<MessageState>({ kind: "idle", text: "" });
@@ -299,6 +313,28 @@ export default function DashboardPage() {
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean);
+  }
+
+  function sanitizeUploadStem(value: string) {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "asset";
+  }
+
+  function isAllowedUploadExtension(fileName: string) {
+    const extension = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
+    return [".png", ".jpg", ".jpeg", ".webp"].includes(extension);
+  }
+
+  function resetUploadForm() {
+    setAssetUploadFile(null);
+    setAssetUploadName("");
+    setAssetUploadSlug("");
+    setAssetUploadLicenseName(DEFAULT_UPLOAD_FORM.licenseName);
+    setAssetUploadChannelSlug(DEFAULT_UPLOAD_FORM.channelSlug);
+    setAssetUploadTopic(DEFAULT_UPLOAD_FORM.topic);
+    setAssetUploadTagsText(DEFAULT_UPLOAD_FORM.tagsText);
   }
 
   function formatTargetDuration(value: number | null | undefined) {
@@ -657,6 +693,102 @@ export default function DashboardPage() {
         kind: "success",
         text: `Asset ${asset.name} selecionado para regeneracao do preview do video ${selectedVideoId}.`,
       });
+    }
+  }
+
+  async function uploadLocalAsset() {
+    if (!assetUploadFile) {
+      setMessage({ kind: "error", text: "Escolha um arquivo antes de enviar o asset." });
+      return;
+    }
+    if (!isAllowedUploadExtension(assetUploadFile.name)) {
+      setMessage({ kind: "error", text: "Apenas .png, .jpg, .jpeg e .webp são permitidos. .mp4 continua bloqueado." });
+      return;
+    }
+
+    setBusyAction("upload-asset");
+    try {
+      const searchParams = new URLSearchParams({
+        filename: assetUploadFile.name,
+        name: assetUploadName.trim() || assetUploadFile.name.replace(/\.[^.]+$/, ""),
+        slug: assetUploadSlug.trim() || sanitizeUploadStem(assetUploadFile.name.replace(/\.[^.]+$/, "")),
+        asset_type: "background_image",
+        license_name: assetUploadLicenseName.trim() || DEFAULT_UPLOAD_FORM.licenseName,
+      });
+      if (assetUploadChannelSlug.trim()) {
+        searchParams.set("channel_slug", assetUploadChannelSlug.trim());
+      }
+      if (assetUploadTopic.trim()) {
+        searchParams.set("topic", assetUploadTopic.trim());
+      }
+      const tags = parseTagsInput(assetUploadTagsText);
+      if (tags.length > 0) {
+        searchParams.set("tags", tags.join(","));
+      }
+
+      const response = await fetch(
+        `${normalizeBaseUrl(apiBaseUrl)}/internal/videos/assets/upload?${searchParams.toString()}`,
+        {
+          method: "POST",
+          cache: "no-store",
+          body: assetUploadFile,
+        },
+      );
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(body || `Request failed with status ${response.status}`);
+      }
+
+      const created = (await response.json()) as AssetItem;
+      await loadAssets({ quiet: true });
+      resetUploadForm();
+
+      if (selectedVideoId !== null && canSelectAsset(selectedVideo)) {
+        try {
+          await applyAsset(created, { quiet: true });
+          setMessage({ kind: "success", text: "Asset enviado e cadastrado. Asset aplicado ao vídeo atual." });
+          return;
+        } catch (error) {
+          setMessage({
+            kind: "error",
+            text:
+              error instanceof Error
+                ? `Asset enviado e cadastrado, mas não foi possível aplicar ao vídeo atual: ${error.message}`
+                : "Asset enviado e cadastrado, mas não foi possível aplicar ao vídeo atual.",
+          });
+          return;
+        }
+      }
+
+      if (selectedVideoId !== null && canRegeneratePreview(selectedVideo)) {
+        setPendingAssetId(created.asset_id);
+        setMessage({
+          kind: "success",
+          text: "Asset enviado e cadastrado. Asset selecionado para regeneração do preview.",
+        });
+        return;
+      }
+
+      setMessage({ kind: "success", text: "Asset enviado e cadastrado." });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao enviar asset local." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function handleAssetUploadFileChange(file: File | null) {
+    setAssetUploadFile(file);
+    if (!file) {
+      return;
+    }
+    const stem = file.name.replace(/\.[^.]+$/, "");
+    if (!assetUploadName.trim()) {
+      setAssetUploadName(stem.replace(/[-_]+/g, " ").trim() || stem);
+    }
+    if (!assetUploadSlug.trim()) {
+      setAssetUploadSlug(sanitizeUploadStem(stem));
     }
   }
 
@@ -1360,7 +1492,63 @@ export default function DashboardPage() {
                   O asset ou template atual foi alterado. Use {'"'}Regenerar preview{'"'} para atualizar o video selecionado.
                 </p>
               ) : null}
+              <div className="asset-upload-form">
+                <div className="panel-header">
+                  <h3>Upload local</h3>
+                  <span className="panel-hint">png / jpg / jpeg / webp</span>
+                </div>
+                <div className="asset-form-grid">
+                  <label className="field asset-form-tags">
+                    <span>Arquivo</span>
+                    <input
+                      type="file"
+                      accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                      onChange={(event) => handleAssetUploadFileChange(event.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Nome</span>
+                    <input value={assetUploadName} onChange={(event) => setAssetUploadName(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Slug</span>
+                    <input value={assetUploadSlug} onChange={(event) => setAssetUploadSlug(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Licença</span>
+                    <input value={assetUploadLicenseName} onChange={(event) => setAssetUploadLicenseName(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Channel slug opcional</span>
+                    <input
+                      value={assetUploadChannelSlug}
+                      onChange={(event) => setAssetUploadChannelSlug(event.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Tema/nicho opcional</span>
+                    <input value={assetUploadTopic} onChange={(event) => setAssetUploadTopic(event.target.value)} />
+                  </label>
+                  <label className="field asset-form-tags">
+                    <span>Tags opcional</span>
+                    <input value={assetUploadTagsText} onChange={(event) => setAssetUploadTagsText(event.target.value)} />
+                  </label>
+                </div>
+                <div className="asset-form-actions">
+                  <span className="panel-hint">
+                    Destino seguro: <code>storage/assets/uploads</code>. .mp4 continua bloqueado.
+                  </span>
+                  <button type="button" className="primary secondary" onClick={() => void uploadLocalAsset()} disabled={busyAction !== null}>
+                    {busyAction === "upload-asset" ? "Enviando..." : "Enviar arquivo"}
+                  </button>
+                </div>
+                {assetUploadFile ? <p className="helper">Arquivo selecionado: {assetUploadFile.name}</p> : null}
+              </div>
               <div className="asset-form">
+                <div className="panel-header">
+                  <h3>Cadastro local por caminho</h3>
+                  <span className="panel-hint">reaproveita um arquivo já existente em storage/assets</span>
+                </div>
                 <div className="asset-form-grid">
                   <label className="field">
                     <span>File path</span>

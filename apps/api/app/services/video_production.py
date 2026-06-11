@@ -419,6 +419,33 @@ class VideoProductionService:
             tags=tags,
         )
 
+    async def register_uploaded_asset(
+        self,
+        *,
+        file_bytes: bytes,
+        original_filename: str | None,
+        name: str | None = None,
+        slug: str | None = None,
+        asset_type: str | None = None,
+        license_name: str = "generated-local",
+        license_url: str | None = None,
+        channel_slug: str | None = None,
+        topic: str | None = None,
+        tags: list[str] | str | None = None,
+    ):
+        return await self.asset_service.register_uploaded_asset(
+            file_bytes=file_bytes,
+            original_filename=original_filename,
+            name=name,
+            slug=slug,
+            asset_type=asset_type,
+            license_name=license_name,
+            license_url=license_url,
+            channel_slug=channel_slug,
+            topic=topic,
+            tags=tags,
+        )
+
     async def render_preview(self, *, video_id: int, visual_template: str | None = None):
         return await self.render_worker.render_preview(video_id=video_id, visual_template=visual_template)
 

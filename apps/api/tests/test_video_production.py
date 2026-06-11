@@ -995,6 +995,143 @@ async def test_internal_asset_registration_and_listing(
 
 
 @pytest.mark.asyncio
+async def test_internal_asset_upload_registers_file_inside_storage(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_service():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield VideoProductionService(session=session, settings=settings)
+        finally:
+            await engine.dispose()
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+    app.dependency_overrides[get_video_production_service] = _override_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/internal/videos/assets/upload",
+                params={
+                    "filename": "Python BG.PNG",
+                    "name": "Python Background",
+                    "slug": "python-background",
+                    "license_name": "generated-local",
+                    "channel_slug": "manual-test",
+                    "topic": "python",
+                    "tags": "education,local",
+                },
+                content=b"fake-png",
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    uploaded = AssetResponse.model_validate(response.json())
+    assert uploaded.source_path is not None
+    assert uploaded.source_path.startswith("storage/assets/uploads/")
+    saved_file = tmp_path / uploaded.source_path
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == b"fake-png"
+
+
+@pytest.mark.asyncio
+async def test_internal_asset_upload_blocks_invalid_extension(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_service():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield VideoProductionService(session=session, settings=settings)
+        finally:
+            await engine.dispose()
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+    app.dependency_overrides[get_video_production_service] = _override_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/internal/videos/assets/upload",
+                params={"filename": "bad.txt", "license_name": "generated-local"},
+                content=b"nope",
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "unsupported" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_internal_asset_upload_blocks_mp4(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_service():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield VideoProductionService(session=session, settings=settings)
+        finally:
+            await engine.dispose()
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+    app.dependency_overrides[get_video_production_service] = _override_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/internal/videos/assets/upload",
+                params={"filename": "clip.mp4", "license_name": "generated-local"},
+                content=b"fake-mp4",
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "mp4" in response.json()["detail"].lower()
+    assert "not supported" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_internal_asset_registration_blocks_traversal(
     db_session,
     temp_database_url: str,
