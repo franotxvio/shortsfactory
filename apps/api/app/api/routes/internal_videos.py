@@ -67,7 +67,22 @@ def _resolve_storage_file_path(path_value: str) -> Path:
 @router.get("/files")
 async def get_storage_file(path: str) -> FileResponse:
     resolved_path = _resolve_storage_file_path(path)
-    return FileResponse(resolved_path, filename=resolved_path.name)
+    suffix = resolved_path.suffix.lower()
+    media_types = {
+        ".mp4": "video/mp4",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".srt": "text/plain; charset=utf-8",
+    }
+    content_disposition_type = "inline" if suffix in {".mp4", ".png", ".jpg", ".jpeg", ".webp", ".srt"} else "attachment"
+    return FileResponse(
+        resolved_path,
+        filename=resolved_path.name,
+        media_type=media_types.get(suffix, "application/octet-stream"),
+        content_disposition_type=content_disposition_type,
+    )
 
 
 @router.get("", response_model=VideoListResponse)

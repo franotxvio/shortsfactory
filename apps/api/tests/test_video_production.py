@@ -409,11 +409,11 @@ def test_internal_video_preflight_allows_local_dashboard_origin() -> None:
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
 
 
-def test_internal_file_endpoint_serves_valid_storage_file(tmp_path, monkeypatch) -> None:
+def test_internal_file_endpoint_serves_valid_storage_mp4_inline(tmp_path, monkeypatch) -> None:
     storage_root = tmp_path / "storage"
-    caption_path = storage_root / "captions" / "demo.srt"
-    caption_path.parent.mkdir(parents=True, exist_ok=True)
-    caption_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+    preview_path = storage_root / "renders" / "previews" / "demo.mp4"
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.write_bytes(b"fake-mp4-content")
 
     monkeypatch.setattr(
         internal_videos_routes,
@@ -422,10 +422,11 @@ def test_internal_file_endpoint_serves_valid_storage_file(tmp_path, monkeypatch)
     )
 
     with TestClient(app) as client:
-        response = client.get("/internal/videos/files", params={"path": "storage/captions/demo.srt"})
+        response = client.get("/internal/videos/files", params={"path": "storage/renders/previews/demo.mp4"})
 
     assert response.status_code == 200
-    assert "Hello" in response.text
+    assert response.headers["content-type"].startswith("video/mp4")
+    assert response.headers["content-disposition"].lower().startswith("inline")
 
 
 def test_internal_file_endpoint_blocks_path_traversal(tmp_path, monkeypatch) -> None:
