@@ -19,7 +19,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
 from app.models.base import Base, TimestampMixin
-from app.models.enums import LifecycleStatus, WorkflowStatus, lifecycle_status_type, workflow_status_type
+from app.models.enums import (
+    LifecycleStatus,
+    VideoStageStatus,
+    WorkflowStatus,
+    lifecycle_status_type,
+    video_stage_status_type,
+    workflow_status_type,
+)
 
 
 class Channel(TimestampMixin, Base):
@@ -54,15 +61,29 @@ class Video(TimestampMixin, Base):
         default=WorkflowStatus.DRAFT,
         server_default=WorkflowStatus.DRAFT.value,
     )
+    stage_status: Mapped[VideoStageStatus] = mapped_column(
+        video_stage_status_type(),
+        nullable=False,
+        default=VideoStageStatus.DRAFT,
+        server_default=VideoStageStatus.DRAFT.value,
+    )
     target_duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("asset_pool.id", ondelete="SET NULL"))
+    audio_path: Mapped[str | None] = mapped_column(String(1024))
+    caption_path: Mapped[str | None] = mapped_column(String(1024))
+    preview_path: Mapped[str | None] = mapped_column(String(1024))
+    final_path: Mapped[str | None] = mapped_column(String(1024))
+    preview_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     channel: Mapped[Channel] = relationship(back_populates="videos")
     scripts: Mapped[list["Script"]] = relationship(back_populates="video", cascade="all, delete-orphan")
+    asset: Mapped[AssetPool | None] = relationship("AssetPool")
 
     __table_args__ = (
         UniqueConstraint("channel_id", "slug", name="uq_videos_channel_id_slug"),
         Index("ix_videos_channel_id", "channel_id"),
         Index("ix_videos_status", "status"),
+        Index("ix_videos_stage_status", "stage_status"),
     )
 
 

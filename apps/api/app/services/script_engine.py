@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.models.core import Channel, CostLog, LLMCache, Script, Video
-from app.models.enums import LifecycleStatus, WorkflowStatus
+from app.models.enums import LifecycleStatus, VideoStageStatus, WorkflowStatus
 from app.services.llm_types import LLMResult, LLMUsage
 from app.services.openai_client import OpenAIChatPayload, OpenAIJSONClient
 
@@ -108,6 +108,8 @@ class ScriptEngineService:
                 llm_input_hash=script.content.get("input_hash"),
             )
             self.session.add(script_row)
+            video.status = WorkflowStatus.APPROVED if script_row.status == WorkflowStatus.APPROVED else WorkflowStatus.REJECTED
+            video.stage_status = VideoStageStatus.SCRIPT_APPROVED if script_row.status == WorkflowStatus.APPROVED else VideoStageStatus.DRAFT
             await self.session.flush()
 
             return ScriptGenerationResult(

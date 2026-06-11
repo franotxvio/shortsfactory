@@ -4,6 +4,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_sessionmaker
+from app.services.video_production import VideoProductionService
 from app.services.script_engine import ScriptEngineService
 
 
@@ -17,3 +18,9 @@ def get_script_engine_service(
     session: AsyncSession = Depends(get_async_session),
 ) -> ScriptEngineService:
     return ScriptEngineService(session=session)
+
+
+def get_video_production_service(
+    session: AsyncSession = Depends(get_async_session),
+) -> VideoProductionService:
+    return VideoProductionService(session=session)

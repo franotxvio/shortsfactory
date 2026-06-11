@@ -48,3 +48,19 @@ class OpenAIJSONClient:
             ),
             raw_content=raw_content,
         )
+
+    async def generate_tts_audio(
+        self,
+        *,
+        text: str,
+        model: str,
+        voice: str,
+    ) -> tuple[bytes, str | None]:
+        response = await self._client.audio.speech.create(
+            model=model,
+            voice=voice,
+            input=text,
+            response_format="mp3",
+        )
+        audio_bytes = response.read() if hasattr(response, "read") else getattr(response, "content", b"")
+        return audio_bytes, getattr(response, "request_id", None)
