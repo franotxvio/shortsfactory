@@ -22,6 +22,7 @@ class VideoProductionResponse(BaseModel):
     status: str | None = None
     stage_status: str | None = None
     is_demo: bool = False
+    script_text: str | None = None
     hook: str | None = None
     body_blocks: list[str] | None = None
     call_to_action: str | None = None
@@ -41,6 +42,15 @@ class VideoStepRequest(BaseModel):
     execution_mode: VideoExecutionMode = Field(default=VideoExecutionMode.FAKE)
 
 
+class VideoScriptUpdateRequest(BaseModel):
+    script_text: str = Field(min_length=3, max_length=10_000)
+    hook: str | None = Field(default=None, max_length=2_000)
+    body_blocks: list[str] | None = None
+    call_to_action: str | None = Field(default=None, max_length=2_000)
+    estimated_duration_seconds: int | None = Field(default=None, ge=1, le=3_600)
+    style_tone: str | None = Field(default=None, max_length=255)
+
+
 class VideoPipelineResponse(BaseModel):
     video_id: int
     video_slug: str | None = None
@@ -56,6 +66,7 @@ class VideoPipelineResponse(BaseModel):
     asset_path: str | None = None
     preview_approved_at: datetime | None = None
     is_demo: bool = False
+    script_text: str | None = None
     hook: str | None = None
     body_blocks: list[str] | None = None
     call_to_action: str | None = None

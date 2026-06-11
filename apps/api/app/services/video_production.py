@@ -51,6 +51,7 @@ class VideoPipelineState:
     final_path: str | None = None
     asset_path: str | None = None
     preview_approved_at: datetime | None = None
+    script_text: str | None = None
     hook: str | None = None
     body_blocks: list[str] | None = None
     call_to_action: str | None = None
@@ -130,6 +131,7 @@ class VideoProductionService:
                     script_id=script_metadata["script_id"],
                     script_status=script_metadata["script_status"],
                     asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+                    script_text=script_metadata["script_text"],
                     hook=script_metadata["hook"],
                     body_blocks=script_metadata["body_blocks"],
                     call_to_action=script_metadata["call_to_action"],
@@ -160,6 +162,64 @@ class VideoProductionService:
             channel_slug=channel_slug,
             channel_name=channel_name,
             video_title=video_title,
+        )
+
+    async def update_script(
+        self,
+        *,
+        video_id: int,
+        script_text: str,
+        hook: str | None = None,
+        body_blocks: list[str] | None = None,
+        call_to_action: str | None = None,
+        estimated_duration_seconds: int | None = None,
+        style_tone: str | None = None,
+    ) -> VideoPipelineState:
+        statement = (
+            select(Video)
+            .options(selectinload(Video.asset))
+            .where(Video.id == video_id)
+        )
+        video = await self.session.scalar(statement)
+        if video is None:
+            raise ValueError(f"Video {video_id} not found")
+        if video.stage_status != VideoStageStatus.SCRIPT_APPROVED:
+            raise ValueError("Script can only be edited before TTS starts")
+
+        script = await self._get_latest_script(video_id=video_id)
+        if script is None:
+            raise ValueError(f"Script for video {video_id} not found")
+
+        updated_script = self._normalize_updated_script(
+            script_text=script_text,
+            hook=hook,
+            body_blocks=body_blocks,
+            call_to_action=call_to_action,
+            estimated_duration_seconds=estimated_duration_seconds,
+            style_tone=style_tone,
+            existing_script=script,
+        )
+
+        script.hook = str(updated_script["hook"] or "")
+        script.content = str(updated_script["script"] or "")
+        generation_payload = dict(script.generation_payload or {})
+        generation_payload["script"] = updated_script
+        script.generation_payload = generation_payload
+        script.llm_input_hash = None
+        script.llm_cache_key = None
+        await self.session.flush()
+
+        return self._build_state(
+            video,
+            script_id=script.id,
+            script_status=script.status.value,
+            asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+            script_text=str(updated_script["script"] or ""),
+            hook=str(updated_script["hook"] or ""),
+            body_blocks=list(updated_script["body_blocks"] or []),
+            call_to_action=str(updated_script["call_to_action"] or ""),
+            estimated_duration_seconds=int(updated_script["estimated_duration_seconds"] or 0) or None,
+            style_tone=str(updated_script["style_tone"] or ""),
         )
 
     async def run_tts(self, *, video_id: int, execution_mode: VideoExecutionMode = VideoExecutionMode.FAKE):
@@ -200,6 +260,7 @@ class VideoProductionService:
             script_id=script_metadata["script_id"],
             script_status=script_metadata["script_status"],
             asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+            script_text=script_metadata["script_text"],
             hook=script_metadata["hook"],
             body_blocks=script_metadata["body_blocks"],
             call_to_action=script_metadata["call_to_action"],
@@ -260,6 +321,7 @@ class VideoProductionService:
                 script_id=script.id,
                 script_status=script.status.value,
                 asset_path=None,
+                script_text=script_content["script"],
                 hook=script_content["hook"],
                 body_blocks=script_content["body_blocks"],
                 call_to_action=script_content["call_to_action"],
@@ -292,6 +354,7 @@ class VideoProductionService:
             script_id=result.script_id,
             script_status=result.script_status,
             asset_path=None,
+            script_text=result.script_text,
             hook=result.hook,
             body_blocks=result.body_blocks,
             call_to_action=result.call_to_action,
@@ -330,6 +393,7 @@ class VideoProductionService:
         script_id: int | None = None,
         script_status: str | None = None,
         asset_path: str | None = None,
+        script_text: str | None = None,
         hook: str | None = None,
         body_blocks: list[str] | None = None,
         call_to_action: str | None = None,
@@ -350,6 +414,7 @@ class VideoProductionService:
             final_path=video.final_path,
             asset_path=asset_path,
             preview_approved_at=video.preview_approved_at,
+            script_text=script_text,
             hook=hook,
             body_blocks=body_blocks,
             call_to_action=call_to_action,
@@ -404,13 +469,17 @@ class VideoProductionService:
             "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
         }
 
-    async def _get_latest_script_metadata(self, *, video_id: int) -> dict[str, int | str | list[str] | None]:
+    async def _get_latest_script(self, *, video_id: int) -> Script | None:
         statement = select(Script).where(Script.video_id == video_id).order_by(Script.version.desc())
-        script = await self.session.scalar(statement)
+        return await self.session.scalar(statement)
+
+    async def _get_latest_script_metadata(self, *, video_id: int) -> dict[str, int | str | list[str] | None]:
+        script = await self._get_latest_script(video_id=video_id)
         if script is None:
             return {
                 "script_id": None,
                 "script_status": None,
+                "script_text": None,
                 "hook": None,
                 "body_blocks": None,
                 "call_to_action": None,
@@ -420,6 +489,7 @@ class VideoProductionService:
 
         generation_payload = script.generation_payload if isinstance(script.generation_payload, dict) else {}
         script_payload = generation_payload.get("script") if isinstance(generation_payload.get("script"), dict) else {}
+        script_text = str(script_payload.get("script") or script.content or "").strip() or None
         hook = str(script_payload.get("hook") or script.hook or "").strip() or None
         body_blocks = self._coerce_string_list(script_payload.get("body_blocks"))
         call_to_action = str(script_payload.get("call_to_action") or "").strip() or None
@@ -427,16 +497,107 @@ class VideoProductionService:
         if not isinstance(estimated_duration_seconds, int) or estimated_duration_seconds <= 0:
             estimated_duration_seconds = None
         style_tone = str(script_payload.get("style_tone") or "").strip() or None
-        if not body_blocks and script.content:
-            body_blocks = [part.strip() for part in script.content.split("\n\n") if part.strip()][1:-1]
+        if not body_blocks and script_text:
+            parsed_script = self._split_script_text(script_text)
+            if len(parsed_script) >= 3:
+                body_blocks = parsed_script[1:-1]
+        if not script_text and body_blocks:
+            script_text = self._compose_script_text(
+                hook=hook,
+                body_blocks=body_blocks,
+                call_to_action=call_to_action,
+            )
         return {
             "script_id": script.id,
             "script_status": script.status.value,
+            "script_text": script_text,
             "hook": hook,
             "body_blocks": body_blocks or None,
             "call_to_action": call_to_action,
             "estimated_duration_seconds": estimated_duration_seconds,
             "style_tone": style_tone,
+        }
+
+    def _split_script_text(self, script_text: str) -> list[str]:
+        return [part.strip() for part in script_text.split("\n\n") if part.strip()]
+
+    def _compose_script_text(self, *, hook: str | None, body_blocks: list[str] | None, call_to_action: str | None) -> str:
+        parts = [part.strip() for part in [hook or "", *(body_blocks or []), call_to_action or ""] if part.strip()]
+        return "\n\n".join(parts)
+
+    def _normalize_updated_script(
+        self,
+        *,
+        script_text: str,
+        hook: str | None,
+        body_blocks: list[str] | None,
+        call_to_action: str | None,
+        estimated_duration_seconds: int | None,
+        style_tone: str | None,
+        existing_script: Script,
+    ) -> dict[str, object]:
+        script_text_value = script_text.strip()
+        parsed_blocks = self._split_script_text(script_text_value)
+        current_hook = str(existing_script.hook or "").strip() or None
+        current_body_blocks: list[str] | None = None
+        current_call_to_action: str | None = None
+        current_style_tone = None
+        current_duration = None
+
+        generation_payload = existing_script.generation_payload if isinstance(existing_script.generation_payload, dict) else {}
+        existing_script_payload = generation_payload.get("script") if isinstance(generation_payload.get("script"), dict) else {}
+        if isinstance(existing_script_payload, dict):
+            current_body_blocks = self._coerce_string_list(existing_script_payload.get("body_blocks")) or None
+            current_call_to_action = str(existing_script_payload.get("call_to_action") or "").strip() or None
+            current_style_tone = str(existing_script_payload.get("style_tone") or "").strip() or None
+            current_duration_raw = existing_script_payload.get("estimated_duration_seconds")
+            if isinstance(current_duration_raw, int) and current_duration_raw > 0:
+                current_duration = current_duration_raw
+
+        if len(parsed_blocks) >= 3:
+            current_hook = parsed_blocks[0]
+            current_body_blocks = parsed_blocks[1:-1]
+            current_call_to_action = parsed_blocks[-1]
+        elif not current_body_blocks:
+            current_body_blocks = self._coerce_string_list(existing_script_payload.get("body_blocks")) or None
+
+        if hook is not None:
+            current_hook = hook.strip() or None
+        if body_blocks is not None:
+            current_body_blocks = self._coerce_string_list(body_blocks) or None
+        if call_to_action is not None:
+            current_call_to_action = call_to_action.strip() or None
+        if style_tone is not None:
+            current_style_tone = style_tone.strip() or None
+        if estimated_duration_seconds is not None and estimated_duration_seconds > 0:
+            current_duration = estimated_duration_seconds
+
+        normalized_body_blocks = current_body_blocks or []
+        if len(normalized_body_blocks) > 5:
+            normalized_body_blocks = normalized_body_blocks[:5]
+
+        normalized_script_text = self._compose_script_text(
+            hook=current_hook,
+            body_blocks=normalized_body_blocks,
+            call_to_action=current_call_to_action,
+        )
+        if not normalized_script_text:
+            normalized_script_text = script_text_value
+
+        if current_duration is None:
+            current_duration = max(18, 12 + len(normalized_body_blocks) * 6)
+        if current_style_tone is None:
+            current_style_tone = "didatico e direto"
+
+        return {
+            "title": f"Roteiro curto: {existing_script.topic or existing_script.video_id}",
+            "hook": current_hook or "",
+            "body_blocks": normalized_body_blocks,
+            "call_to_action": current_call_to_action or "",
+            "estimated_duration_seconds": current_duration,
+            "style_tone": current_style_tone,
+            "script": normalized_script_text,
+            "beats": ["hook", *[f"body_{index + 1}" for index in range(len(normalized_body_blocks))], "cta"],
         }
 
     def _coerce_string_list(self, value: object) -> list[str]:

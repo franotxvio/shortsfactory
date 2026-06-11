@@ -35,7 +35,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -72,6 +73,23 @@ input {
 }
 
 input:focus {
+  outline: 2px solid rgba(103, 232, 249, 0.28);
+  border-color: rgba(103, 232, 249, 0.58);
+}
+
+textarea {
+  width: 100%;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  background: rgba(2, 6, 23, 0.45);
+  color: var(--text);
+  border-radius: 16px;
+  padding: 14px 16px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+textarea:focus {
   outline: 2px solid rgba(103, 232, 249, 0.28);
   border-color: rgba(103, 232, 249, 0.58);
 }
@@ -326,6 +344,41 @@ input:focus {
   display: grid;
   gap: 10px;
   color: var(--muted);
+}
+
+.script-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.script-editor h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.script-editor-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.stage-steps {
+  display: grid;
+  gap: 12px;
+}
+
+.stage-steps h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.stage-step-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.stage-step-grid button {
+  width: 100%;
 }
 
 .paths {

@@ -304,6 +304,95 @@ async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_da
 
 
 @pytest.mark.asyncio
+async def test_internal_video_script_update_before_tts_updates_structure(db_session, temp_database_url: str) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            update_response = client.patch(
+                f"/internal/videos/{created.video_id}/script",
+                json={
+                    "script_text": "Hook novo\n\nBloco um revisado.\n\nBloco dois revisado.\n\nCTA nova para a audiencia.",
+                },
+            )
+            assert update_response.status_code == 200
+            updated = VideoPipelineResponse.model_validate(update_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert updated.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+    assert updated.script_text == "Hook novo\n\nBloco um revisado.\n\nBloco dois revisado.\n\nCTA nova para a audiencia."
+    assert updated.hook == "Hook novo"
+    assert updated.body_blocks == ["Bloco um revisado.", "Bloco dois revisado."]
+    assert updated.call_to_action == "CTA nova para a audiencia."
+    assert updated.estimated_duration_seconds is not None
+
+
+@pytest.mark.asyncio
+async def test_internal_video_script_update_after_tts_is_blocked(db_session, temp_database_url: str) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            tts_response = client.post(f"/internal/videos/{created.video_id}/tts", json={"execution_mode": "fake"})
+            assert tts_response.status_code == 200
+
+            update_response = client.patch(
+                f"/internal/videos/{created.video_id}/script",
+                json={
+                    "script_text": "Hook novo\n\nBloco um revisado.\n\nBloco dois revisado.\n\nCTA nova para a audiencia.",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert update_response.status_code == 400
+    assert "before TTS" in update_response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_internal_video_list_returns_recent_items(db_session, temp_database_url: str) -> None:
     async def _override_async_session():
         engine = create_async_engine(temp_database_url, pool_pre_ping=True)

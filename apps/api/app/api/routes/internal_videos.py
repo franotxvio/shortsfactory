@@ -13,6 +13,7 @@ from app.schemas.video_production import (
     VideoCreateRequest,
     VideoListResponse,
     VideoPipelineResponse,
+    VideoScriptUpdateRequest,
     VideoProductionRequest,
     VideoProductionResponse,
     VideoStepRequest,
@@ -189,6 +190,30 @@ async def produce_video(
     response = VideoProductionResponse.model_validate(asdict(produced))
     response = await _with_demo_flag(service, response)
     return response
+
+
+@router.patch("/{video_id}/script", response_model=VideoPipelineResponse)
+async def update_video_script(
+    video_id: int,
+    payload: VideoScriptUpdateRequest,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> VideoPipelineResponse:
+    try:
+        updated = await service.update_script(
+            video_id=video_id,
+            script_text=payload.script_text,
+            hook=payload.hook,
+            body_blocks=payload.body_blocks,
+            call_to_action=payload.call_to_action,
+            estimated_duration_seconds=payload.estimated_duration_seconds,
+            style_tone=payload.style_tone,
+        )
+        await _commit_if_available(service)
+    except ValueError as error:
+        await _rollback_if_available(service)
+        _raise_http_error(error)
+    response = VideoPipelineResponse.model_validate(asdict(updated))
+    return await _with_demo_flag(service, response)
 
 
 @router.post("/test", response_model=VideoPipelineResponse)

@@ -17,6 +17,7 @@ type VideoItem = {
   final_path?: string | null;
   asset_path?: string | null;
   preview_approved_at?: string | null;
+  script_text?: string | null;
   hook?: string | null;
   body_blocks?: string[] | null;
   call_to_action?: string | null;
@@ -117,6 +118,8 @@ export default function DashboardPage() {
   const [videoTitle, setVideoTitle] = useState(DEFAULT_FORM.videoTitle);
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
+  const selectedVideoIdRef = useRef<number | null>(null);
+  const [scriptDraft, setScriptDraft] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<MessageState>({ kind: "idle", text: "" });
@@ -125,12 +128,46 @@ export default function DashboardPage() {
     () => videos.find((video) => video.video_id === selectedVideoId) ?? null,
     [selectedVideoId, videos],
   );
+  const scriptEditable = selectedVideo?.stage_status === "script_approved";
   const pipelineCompleted =
     selectedVideo?.stage_status === "final_rendered" || selectedVideo?.status === "completed";
+
+  function buildScriptDraft(video: VideoItem | null) {
+    if (!video) {
+      return "";
+    }
+    if (video.script_text) {
+      return video.script_text;
+    }
+    const sections = [video.hook, ...(video.body_blocks ?? []), video.call_to_action].filter(Boolean);
+    return sections.join("\n\n");
+  }
+
+  function canRunStep(video: VideoItem | null, stage: string) {
+    if (!video) {
+      return false;
+    }
+    const order = [
+      "script_approved",
+      "tts_done",
+      "caption_done",
+      "asset_ready",
+      "preview_ready",
+      "preview_approved",
+      "final_rendered",
+    ];
+    const currentIndex = order.indexOf(video.stage_status);
+    const targetIndex = order.indexOf(stage);
+    return currentIndex === targetIndex - 1;
+  }
 
   useEffect(() => {
     apiBaseUrlRef.current = apiBaseUrl;
   }, [apiBaseUrl]);
+
+  useEffect(() => {
+    selectedVideoIdRef.current = selectedVideoId;
+  }, [selectedVideoId]);
 
   const loadVideos = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
@@ -140,12 +177,12 @@ export default function DashboardPage() {
       const payload = await requestJson<VideoListResponse>(baseUrl, "/internal/videos");
       const items = payload.items ?? [];
       setVideos(items);
-      setSelectedVideoId((current) => {
-        if (current !== null && items.some((item) => item.video_id === current)) {
-          return current;
-        }
-        return items[0]?.video_id ?? null;
-      });
+      const nextSelectedId =
+        selectedVideoIdRef.current !== null && items.some((item) => item.video_id === selectedVideoIdRef.current)
+          ? selectedVideoIdRef.current
+          : items[0]?.video_id ?? null;
+      setSelectedVideoId(nextSelectedId);
+      setScriptDraft(buildScriptDraft(items.find((item) => item.video_id === nextSelectedId) ?? null));
       if (!quiet) {
         setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
       }
@@ -169,6 +206,14 @@ export default function DashboardPage() {
       return updated;
     });
     setSelectedVideoId(nextVideo.video_id);
+    selectedVideoIdRef.current = nextVideo.video_id;
+    setScriptDraft(buildScriptDraft(nextVideo));
+  }
+
+  function selectVideo(video: VideoItem) {
+    setSelectedVideoId(video.video_id);
+    selectedVideoIdRef.current = video.video_id;
+    setScriptDraft(buildScriptDraft(video));
   }
 
   async function createFakeVideo() {
@@ -239,6 +284,102 @@ export default function DashboardPage() {
       setMessage({ kind: "success", text: `Status atualizado para o video ${selectedVideoId}.` });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao consultar status." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function saveScriptDraft() {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de salvar o roteiro." });
+      return;
+    }
+    if (!scriptEditable) {
+      setMessage({ kind: "error", text: "O roteiro só pode ser editado antes do TTS começar." });
+      return;
+    }
+
+    setBusyAction("save-script");
+    try {
+      const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/script`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          script_text: scriptDraft,
+        }),
+      });
+      mergeVideo(updated);
+      setScriptDraft(buildScriptDraft(updated));
+      setMessage({ kind: "success", text: `Roteiro do video ${selectedVideoId} salvo com sucesso.` });
+      void loadVideos({ quiet: true });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao salvar roteiro." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function runPipelineStep(step: "tts" | "captions" | "asset" | "preview" | "approve-preview" | "final") {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de executar uma etapa." });
+      return;
+    }
+
+    const stepLabels: Record<typeof step, string> = {
+      tts: "Gerar TTS",
+      captions: "Gerar captions",
+      asset: "Selecionar asset",
+      preview: "Gerar preview",
+      "approve-preview": "Aprovar preview",
+      final: "Render final",
+    };
+    const stepPaths: Record<typeof step, string> = {
+      tts: `/internal/videos/${selectedVideoId}/tts`,
+      captions: `/internal/videos/${selectedVideoId}/captions`,
+      asset: `/internal/videos/${selectedVideoId}/asset`,
+      preview: `/internal/videos/${selectedVideoId}/preview`,
+      "approve-preview": `/internal/videos/${selectedVideoId}/approve-preview`,
+      final: `/internal/videos/${selectedVideoId}/final`,
+    };
+    const stepModes: Record<typeof step, boolean> = {
+      tts: true,
+      captions: true,
+      asset: false,
+      preview: false,
+      "approve-preview": false,
+      final: false,
+    };
+    const stageRequirements: Record<typeof step, string> = {
+      tts: "script_approved",
+      captions: "tts_done",
+      asset: "caption_done",
+      preview: "asset_ready",
+      "approve-preview": "preview_ready",
+      final: "preview_approved",
+    };
+
+    if (!canRunStep(selectedVideo, stageRequirements[step])) {
+      setMessage({
+        kind: "error",
+        text: `Nao foi possivel executar ${stepLabels[step]}. Verifique a ordem do pipeline e o stage_status atual.`,
+      });
+      return;
+    }
+
+    setBusyAction(step);
+    try {
+      const payload = stepModes[step]
+        ? { execution_mode: "fake" }
+        : undefined;
+      const updated = await requestJson<VideoItem>(apiBaseUrl, stepPaths[step], {
+        method: "POST",
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      mergeVideo(updated);
+      setScriptDraft(buildScriptDraft(updated));
+      setMessage({ kind: "success", text: `${stepLabels[step]} executado com sucesso.` });
+      void loadVideos({ quiet: true });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : `Falha ao executar ${stepLabels[step]}.` });
     } finally {
       setBusyAction(null);
     }
@@ -343,11 +484,11 @@ export default function DashboardPage() {
               videos.map((video) => {
                 const isSelected = video.video_id === selectedVideoId;
                 return (
-                  <button
-                    key={video.video_id}
-                    type="button"
-                    className={`video-card${isSelected ? " selected" : ""}`}
-                    onClick={() => setSelectedVideoId(video.video_id)}
+                    <button
+                      key={video.video_id}
+                      type="button"
+                      className={`video-card${isSelected ? " selected" : ""}`}
+                    onClick={() => selectVideo(video)}
                   >
                     <div className="video-card-top">
                       <div>
@@ -426,6 +567,82 @@ export default function DashboardPage() {
               ) : null}
               <p>
                 <strong>Asset:</strong> {selectedVideo.asset_id ?? "pendente"}
+              </p>
+            </div>
+
+            <div className="script-editor">
+              <div className="panel-header">
+                <h3>Roteiro consolidado</h3>
+                <span className="panel-hint">
+                  {scriptEditable ? "Editavel antes do TTS" : "Bloqueado apos script aprovado"}
+                </span>
+              </div>
+              <textarea
+                value={scriptDraft}
+                onChange={(event) => setScriptDraft(event.target.value)}
+                disabled={!scriptEditable}
+                placeholder="O roteiro consolidado aparece aqui antes do TTS."
+                rows={10}
+              />
+              <div className="script-editor-actions">
+                <button type="button" className="primary secondary" onClick={saveScriptDraft} disabled={!scriptEditable || busyAction !== null}>
+                  {busyAction === "save-script" ? "Salvando..." : "Salvar roteiro"}
+                </button>
+                {!scriptEditable ? <p className="helper">A edicao fica liberada somente enquanto o video estiver em script_approved.</p> : null}
+              </div>
+            </div>
+
+            <div className="stage-steps">
+              <div className="panel-header">
+                <h3>Controle por etapa</h3>
+                <span className="panel-hint">stage atual: {selectedVideo.stage_status}</span>
+              </div>
+              <div className="stage-step-grid">
+                <button
+                  type="button"
+                  onClick={() => void runPipelineStep("tts")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "script_approved")}
+                >
+                  {busyAction === "tts" ? "Gerando..." : "Gerar TTS"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runPipelineStep("captions")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "tts_done")}
+                >
+                  {busyAction === "captions" ? "Gerando..." : "Gerar captions"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runPipelineStep("asset")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "caption_done")}
+                >
+                  {busyAction === "asset" ? "Selecionando..." : "Selecionar asset"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runPipelineStep("preview")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "asset_ready")}
+                >
+                  {busyAction === "preview" ? "Gerando..." : "Gerar preview"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runPipelineStep("approve-preview")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_ready")}
+                >
+                  {busyAction === "approve-preview" ? "Aprovando..." : "Aprovar preview"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runPipelineStep("final")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_approved")}
+                >
+                  {busyAction === "final" ? "Renderizando..." : "Render final"}
+                </button>
+              </div>
+              <p className="helper">
+                Cada botao segue a ordem real do pipeline. Se o stage atual nao permitir a etapa, a API responde com erro claro.
               </p>
             </div>
 
