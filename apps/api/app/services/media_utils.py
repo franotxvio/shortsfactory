@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -95,3 +96,24 @@ def build_srt_from_text(text: str, duration_seconds: float | None = None) -> str
         lines.append("")
     return "\n".join(lines)
 
+
+def build_deterministic_mp3_bytes(*, ffmpeg_path: str, duration_seconds: float = 2.0) -> bytes:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "deterministic-audio.mp3"
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-t",
+            str(duration_seconds),
+            "-q:a",
+            "9",
+            "-acodec",
+            "libmp3lame",
+            str(output_path),
+        ]
+        run_command(command)
+        return output_path.read_bytes()

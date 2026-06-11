@@ -28,6 +28,11 @@ class VideoStageStatus(str, Enum):
     FINAL_RENDERED = "final_rendered"
 
 
+class VideoExecutionMode(str, Enum):
+    FAKE = "fake"
+    REAL = "real"
+
+
 def lifecycle_status_type(**kwargs: object) -> SAEnum:
     return SAEnum(
         LifecycleStatus,

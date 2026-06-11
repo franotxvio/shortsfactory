@@ -27,16 +27,18 @@ class TTSWorker:
         session: AsyncSession,
         client: OpenAIJSONClient | None = None,
         settings: Settings | None = None,
+        record_cost_log: bool = True,
     ) -> None:
         self.session = session
         self.settings = settings or get_settings()
         self.client = client or OpenAIJSONClient(self.settings)
+        self.record_cost_log = record_cost_log
 
     async def generate(self, *, video_id: int) -> TTSResult:
         video = await self.session.get(Video, video_id)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
-        if video.stage_status not in {VideoStageStatus.SCRIPT_APPROVED, VideoStageStatus.DRAFT}:
+        if video.stage_status != VideoStageStatus.SCRIPT_APPROVED:
             raise ValueError("TTS is only allowed after script approval")
 
         script = await self._get_approved_script(video_id)
@@ -51,16 +53,17 @@ class TTSWorker:
         audio_path.write_bytes(audio_bytes)
 
         cost_usd = _estimate_tts_cost(script.content, self.settings)
-        self.session.add(
-            CostLog(
-                video_id=video.id,
-                provider="openai",
-                operation="tts",
-                request_id=request_id,
-                model=self.settings.openai_tts_model,
-                cost_usd=cost_usd,
+        if self.record_cost_log:
+            self.session.add(
+                CostLog(
+                    video_id=video.id,
+                    provider="openai",
+                    operation="tts",
+                    request_id=request_id,
+                    model=self.settings.openai_tts_model,
+                    cost_usd=cost_usd,
+                )
             )
-        )
         video.audio_path = str(audio_path)
         video.stage_status = VideoStageStatus.TTS_DONE
         await self.session.flush()
@@ -83,4 +86,3 @@ def _estimate_tts_cost(text: str, settings: Settings) -> Decimal:
     characters = len(text)
     cost = (characters / 1_000_000) * settings.openai_tts_cost_per_1m_chars_usd
     return Decimal(str(round(cost, 6)))
-

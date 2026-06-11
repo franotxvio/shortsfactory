@@ -13,7 +13,7 @@ from app.models.core import (
     WeakPattern,
     WinningPattern,
 )
-from app.models.enums import VideoStageStatus
+from app.models.enums import VideoExecutionMode, VideoStageStatus
 
 __all__ = [
     "AssetPool",
@@ -26,6 +26,7 @@ __all__ = [
     "SimilarityCheck",
     "Script",
     "Video",
+    "VideoExecutionMode",
     "VideoStageStatus",
     "VideoPattern",
     "WeakPattern",

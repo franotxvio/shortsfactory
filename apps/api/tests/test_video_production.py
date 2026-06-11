@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.deps import get_video_production_service
+from app.api.deps import get_async_session, get_video_production_service
 from app.core.config import Settings
 from app.main import app
 from app.models.core import AssetPool, CostLog, Script, Video
 from app.models.enums import VideoStageStatus, WorkflowStatus
+from app.schemas.video_production import VideoPipelineResponse
 from app.schemas.video_production import VideoProductionResponse
 from app.services.llm_types import LLMResult, LLMUsage
 from app.services.script_engine import ScriptEngineService
@@ -179,3 +181,106 @@ def test_internal_video_route_returns_response() -> None:
     body = VideoProductionResponse.model_validate(response.json())
     assert body.video_id == 123
     assert body.final_path.endswith("fake.mp4")
+
+
+@pytest.mark.asyncio
+async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_database_url: str) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+            assert created.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+            assert created.script_id is not None
+
+            video_id = created.video_id
+
+            tts_response = client.post(f"/internal/videos/{video_id}/tts", json={"execution_mode": "fake"})
+            assert tts_response.status_code == 200
+            tts_state = VideoPipelineResponse.model_validate(tts_response.json())
+            assert tts_state.stage_status == VideoStageStatus.TTS_DONE.value
+            assert Path(tts_state.audio_path or "").exists()
+
+            captions_response = client.post(f"/internal/videos/{video_id}/captions", json={"execution_mode": "fake"})
+            assert captions_response.status_code == 200
+            captions_state = VideoPipelineResponse.model_validate(captions_response.json())
+            assert captions_state.stage_status == VideoStageStatus.CAPTION_DONE.value
+            assert Path(captions_state.caption_path or "").exists()
+
+            asset_response = client.post(f"/internal/videos/{video_id}/asset")
+            assert asset_response.status_code == 200
+            asset_state = VideoPipelineResponse.model_validate(asset_response.json())
+            assert asset_state.stage_status == VideoStageStatus.ASSET_READY.value
+            assert Path(asset_state.asset_path or "").exists()
+
+            preview_response = client.post(f"/internal/videos/{video_id}/preview")
+            assert preview_response.status_code == 200
+            preview_state = VideoPipelineResponse.model_validate(preview_response.json())
+            assert preview_state.stage_status == VideoStageStatus.PREVIEW_READY.value
+            assert Path(preview_state.preview_path or "").exists()
+
+            approve_response = client.post(f"/internal/videos/{video_id}/approve-preview")
+            assert approve_response.status_code == 200
+            approve_state = VideoPipelineResponse.model_validate(approve_response.json())
+            assert approve_state.stage_status == VideoStageStatus.PREVIEW_APPROVED.value
+            assert approve_state.preview_approved_at is not None
+
+            final_response = client.post(f"/internal/videos/{video_id}/final")
+            assert final_response.status_code == 200
+            final_state = VideoPipelineResponse.model_validate(final_response.json())
+            assert final_state.stage_status == VideoStageStatus.FINAL_RENDERED.value
+            assert Path(final_state.final_path or "").exists()
+
+            status_response = client.get(f"/internal/videos/{video_id}/status")
+            assert status_response.status_code == 200
+            status_state = VideoPipelineResponse.model_validate(status_response.json())
+            assert status_state.stage_status == VideoStageStatus.FINAL_RENDERED.value
+            assert status_state.audio_path == tts_state.audio_path
+            assert status_state.caption_path == captions_state.caption_path
+            assert status_state.preview_path == preview_state.preview_path
+            assert status_state.final_path == final_state.final_path
+    finally:
+        app.dependency_overrides.clear()
+
+    refreshed_video = await db_session.get(Video, video_id)
+    assert refreshed_video is not None
+    assert refreshed_video.stage_status == VideoStageStatus.FINAL_RENDERED
+    assert refreshed_video.audio_path == status_state.audio_path
+    assert refreshed_video.caption_path == status_state.caption_path
+    assert refreshed_video.preview_path == status_state.preview_path
+    assert refreshed_video.final_path == status_state.final_path
+
+    cost_log_count = await db_session.scalar(select(func.count()).select_from(CostLog))
+    assert cost_log_count == 0
+
+
+def test_internal_manual_video_real_mode_requires_api_key() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/videos/test",
+            json={
+                "topic": "Como aprender Python",
+                "execution_mode": "real",
+            },
+        )
+
+    assert response.status_code == 400

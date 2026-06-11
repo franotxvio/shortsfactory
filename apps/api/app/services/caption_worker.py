@@ -32,7 +32,7 @@ class CaptionWorker:
         self.session = session
         self.settings = settings or get_settings()
 
-    async def generate(self, *, video_id: int) -> CaptionResult:
+    async def generate(self, *, video_id: int, use_whisper: bool | None = None) -> CaptionResult:
         video = await self.session.get(Video, video_id)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
@@ -44,7 +44,8 @@ class CaptionWorker:
         ensure_parent_dir(caption_path)
 
         used_whisper = False
-        if self.settings.whisper_model_path.exists():
+        should_try_whisper = self.settings.whisper_model_path.exists() if use_whisper is None else use_whisper
+        if should_try_whisper:
             try:
                 self._generate_with_whisper(Path(video.audio_path), caption_path)
                 used_whisper = True
