@@ -199,3 +199,43 @@ O painel permite:
 - produzir o pipeline fake completo;
 - atualizar o status do video selecionado;
 - visualizar `audio_path`, `caption_path`, `asset_path`, `preview_path` e `final_path`.
+- identificar videos demo/local com o badge `DEMO / LOCAL`.
+
+## 8. Reset local de demo
+
+Use estes comandos quando quiser limpar o ambiente de demo local sem tocar em produção.
+
+### Limpar arquivos gerados em `apps/api/storage`
+
+```bash
+python scripts/cleanup_demo_storage.py
+```
+
+O script:
+
+- remove arquivos gerados dentro de `apps/api/storage`;
+- preserva qualquer `.gitkeep`;
+- nao apaga arquivos fora de `apps/api/storage`.
+
+### Limpar videos fake/demo do banco
+
+Endpoint interno:
+
+```bash
+POST /internal/videos/demo/reset
+```
+
+Body:
+
+```json
+{
+  "confirm": true
+}
+```
+
+Regras:
+
+- funciona apenas fora de `production`;
+- exige `confirm=true`;
+- remove videos demo/local dos canais `internal-test` e `manual-test`;
+- e seguro para reset explicito do ambiente local.

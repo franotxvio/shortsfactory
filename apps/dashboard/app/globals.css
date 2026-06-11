@@ -274,6 +274,11 @@ input:focus {
   color: #a5f3fc;
 }
 
+.badge.demo {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fde68a;
+}
+
 .meta-row {
   display: flex;
   justify-content: space-between;

@@ -325,6 +325,7 @@ async def test_internal_video_list_returns_recent_items(db_session, temp_databas
     assert item.asset_path is not None
     assert item.preview_path is not None
     assert item.final_path is not None
+    assert item.is_demo is True
 
 
 @pytest.mark.asyncio
@@ -444,6 +445,70 @@ def test_internal_file_endpoint_blocks_path_traversal(tmp_path, monkeypatch) -> 
 
     assert response.status_code == 400
     assert "storage directory" in response.json()["detail"].lower()
+
+
+def test_demo_cleanup_endpoint_blocks_production(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        internal_videos_routes,
+        "get_settings",
+        lambda: Settings(local_storage_path=storage_root, app_env="production"),
+    )
+
+    app.dependency_overrides[get_video_production_service] = lambda: FakeVideoProductionService()
+    try:
+        with TestClient(app) as client:
+            response = client.post("/internal/videos/demo/reset", json={"confirm": True})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_demo_cleanup_endpoint_removes_demo_videos(temp_database_url: str, monkeypatch) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    monkeypatch.setattr(
+        internal_videos_routes,
+        "get_settings",
+        lambda: Settings(app_env="development"),
+    )
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+            assert created.is_demo is True
+
+            cleanup_response = client.post("/internal/videos/demo/reset", json={"confirm": True})
+            assert cleanup_response.status_code == 200
+            cleanup_body = cleanup_response.json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert cleanup_body["deleted_videos"] >= 1
+    assert cleanup_body["deleted_scripts"] >= 1
 
 
 @pytest.mark.asyncio

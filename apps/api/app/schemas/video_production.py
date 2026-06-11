@@ -21,6 +21,7 @@ class VideoProductionResponse(BaseModel):
     asset_path: str
     status: str | None = None
     stage_status: str | None = None
+    is_demo: bool = False
 
 
 class VideoCreateRequest(BaseModel):
@@ -49,6 +50,7 @@ class VideoPipelineResponse(BaseModel):
     final_path: str | None = None
     asset_path: str | None = None
     preview_approved_at: datetime | None = None
+    is_demo: bool = False
 
 
 class VideoListResponse(BaseModel):

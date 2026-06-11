@@ -1,11 +1,14 @@
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.api.deps import get_video_production_service
+from app.models.core import Channel, Video
 from app.schemas.video_production import (
     VideoCreateRequest,
     VideoListResponse,
@@ -17,6 +20,7 @@ from app.schemas.video_production import (
 from app.services.video_production import VideoProductionService
 
 router = APIRouter(prefix="/videos", tags=["internal-videos"])
+DEMO_CHANNEL_SLUGS = {"internal-test", "manual-test"}
 
 
 def _raise_http_error(error: ValueError) -> None:
@@ -35,6 +39,33 @@ async def _rollback_if_available(service: VideoProductionService) -> None:
     session = getattr(service, "session", None)
     if session is not None:
         await session.rollback()
+
+
+def _is_production_env() -> bool:
+    return get_settings().app_env.lower() == "production"
+
+
+async def _is_demo_video(service: VideoProductionService, *, video_id: int) -> bool:
+    session = getattr(service, "session", None)
+    if session is None:
+        return False
+    statement = (
+        select(Video)
+        .options(selectinload(Video.channel))
+        .where(Video.id == video_id)
+    )
+    video = await session.scalar(statement)
+    if video is None or video.channel is None:
+        return False
+    channel_slug = video.channel.slug.lower()
+    return channel_slug in DEMO_CHANNEL_SLUGS or channel_slug.endswith("-demo") or channel_slug.endswith("-test")
+
+
+async def _with_demo_flag(
+    service: VideoProductionService,
+    payload: VideoPipelineResponse | VideoProductionResponse,
+) -> VideoPipelineResponse | VideoProductionResponse:
+    return payload.model_copy(update={"is_demo": await _is_demo_video(service, video_id=payload.video_id)})
 
 
 def _resolve_storage_file_path(path_value: str) -> Path:
@@ -85,6 +116,38 @@ async def get_storage_file(path: str) -> FileResponse:
     )
 
 
+@router.post("/demo/reset")
+async def reset_demo_videos(
+    confirm: bool = Body(default=False, embed=True),
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> dict[str, int]:
+    if _is_production_env():
+        raise HTTPException(status_code=403, detail="Demo cleanup is disabled in production")
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Explicit confirm=true is required")
+
+    session = getattr(service, "session", None)
+    if session is None:
+        raise HTTPException(status_code=500, detail="Database session unavailable")
+
+    statement = (
+        select(Video)
+        .options(selectinload(Video.channel), selectinload(Video.scripts))
+        .join(Video.channel)
+        .where(Channel.slug.in_(DEMO_CHANNEL_SLUGS))
+    )
+    videos = (await session.scalars(statement)).unique().all()
+    deleted_videos = 0
+    deleted_scripts = 0
+    for video in videos:
+        deleted_videos += 1
+        deleted_scripts += len(video.scripts)
+        await session.delete(video)
+    await session.flush()
+    await _commit_if_available(service)
+    return {"deleted_videos": deleted_videos, "deleted_scripts": deleted_scripts}
+
+
 @router.get("", response_model=VideoListResponse)
 async def list_videos(
     limit: int = 20,
@@ -94,7 +157,12 @@ async def list_videos(
         result = await service.list_recent_videos(limit=limit)
     except ValueError as error:
         _raise_http_error(error)
-    return VideoListResponse(items=[VideoPipelineResponse.model_validate(asdict(item)) for item in result])
+    items = []
+    for item in result:
+        response = VideoPipelineResponse.model_validate(asdict(item))
+        response = await _with_demo_flag(service, response)
+        items.append(response)
+    return VideoListResponse(items=items)
 
 
 @router.post("/{video_id}/produce", response_model=VideoProductionResponse)
@@ -112,11 +180,15 @@ async def produce_video(
         get_status = getattr(service, "get_status", None)
         if callable(get_status):
             result = await get_status(video_id=video_id)
-            return VideoProductionResponse.model_validate(asdict(result))
+            response = VideoProductionResponse.model_validate(asdict(result))
+            response = await _with_demo_flag(service, response)
+            return response
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoProductionResponse.model_validate(asdict(produced))
+    response = VideoProductionResponse.model_validate(asdict(produced))
+    response = await _with_demo_flag(service, response)
+    return response
 
 
 @router.post("/test", response_model=VideoPipelineResponse)
@@ -136,7 +208,8 @@ async def create_test_video(
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.post("/{video_id}/tts", response_model=VideoPipelineResponse)
@@ -152,7 +225,8 @@ async def run_tts(
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.post("/{video_id}/captions", response_model=VideoPipelineResponse)
@@ -168,7 +242,8 @@ async def run_captions(
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.post("/{video_id}/asset", response_model=VideoPipelineResponse)
@@ -183,7 +258,8 @@ async def select_asset(
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.post("/{video_id}/preview", response_model=VideoPipelineResponse)
@@ -198,7 +274,8 @@ async def render_preview(
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.post("/{video_id}/approve-preview", response_model=VideoPipelineResponse)
@@ -213,7 +290,8 @@ async def approve_preview(
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.post("/{video_id}/final", response_model=VideoPipelineResponse)
@@ -228,7 +306,8 @@ async def render_final(
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
 
 
 @router.get("/{video_id}/status", response_model=VideoPipelineResponse)
@@ -240,4 +319,5 @@ async def get_status(
         result = await service.get_status(video_id=video_id)
     except ValueError as error:
         _raise_http_error(error)
-    return VideoPipelineResponse.model_validate(asdict(result))
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)

@@ -7,6 +7,7 @@ type VideoItem = {
   video_slug?: string | null;
   status: string;
   stage_status: string;
+  is_demo?: boolean;
   script_id?: number | null;
   script_status?: string | null;
   asset_id?: number | null;
@@ -351,6 +352,7 @@ export default function DashboardPage() {
                       <div className="badges">
                         <span className="badge">{video.status}</span>
                         <span className="badge accent">{video.stage_status}</span>
+                        {video.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
                       </div>
                     </div>
                     <div className="meta-row">
@@ -382,6 +384,7 @@ export default function DashboardPage() {
               <div className="badges">
                 <span className="badge">{selectedVideo.status}</span>
                 <span className="badge accent">{selectedVideo.stage_status}</span>
+                {selectedVideo.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
               </div>
               <p>
                 <strong>Script:</strong> {selectedVideo.script_id ?? "pendente"} / {selectedVideo.script_status ?? "pendente"}
