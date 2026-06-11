@@ -1,0 +1,1 @@
+"""ShortsFactory API package."""

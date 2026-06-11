@@ -1,0 +1,57 @@
+Metadata-Version: 2.4
+Name: shortsfactory-api
+Version: 0.1.0
+Summary: Bootstrap inicial do backend FastAPI do ShortsFactory
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: uvicorn[standard]<1.0,>=0.30
+Requires-Dist: pydantic-settings<3.0,>=2.6
+Requires-Dist: sqlalchemy[asyncio]<3.0,>=2.0
+Requires-Dist: asyncpg<1.0,>=0.29
+Requires-Dist: redis<6.0,>=5.0
+Requires-Dist: python-dotenv<2.0,>=1.0
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio<1.0,>=0.23; extra == "dev"
+
+# ShortsFactory API
+
+Bootstrap inicial do backend FastAPI do ShortsFactory.
+
+## Requisitos
+
+- Python 3.11+
+- Postgres local
+- Redis local
+
+## Configuração
+
+O serviço lê variáveis de ambiente a partir de `.env` na raiz do repositório.
+Use `.env.example` como base para montar esse arquivo localmente.
+
+## Executar localmente
+
+```bash
+cd apps/api
+python -m uvicorn app.main:app --reload
+```
+
+## Health check
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Resposta esperada:
+
+```json
+{"status":"ok"}
+```
+
+## Testes
+
+```bash
+cd apps/api
+pytest
+```
