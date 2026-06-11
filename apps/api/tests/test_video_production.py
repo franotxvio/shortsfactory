@@ -15,7 +15,7 @@ from app.api.deps import get_async_session, get_video_production_service
 from app.core.config import Settings
 from app.main import app
 from app.models.core import AssetPool, CostLog, Script, Video
-from app.models.enums import VideoExecutionMode, VideoStageStatus, WorkflowStatus
+from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStatus, WorkflowStatus
 from app.schemas.video_production import AssetListResponse
 from app.schemas.video_production import AssetResponse
 from app.schemas.video_production import VideoListResponse
@@ -170,7 +170,7 @@ async def test_full_video_pipeline_generates_local_artifacts(db_session, tmp_pat
     assert Path(result.caption_path).exists()
     assert Path(result.preview_path).exists()
     assert Path(result.final_path).exists()
-    assert Path(result.asset_path).exists()
+    assert (tmp_path / result.asset_path).exists()
 
     refreshed_video = await db_session.get(Video, video.id)
     assert refreshed_video is not None
@@ -506,6 +506,145 @@ async def test_internal_asset_registration_blocks_traversal(
 
     assert response.status_code == 400
     assert "storage/assets" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_internal_asset_registration_blocks_mp4_backgrounds(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_service():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield VideoProductionService(session=session, settings=settings)
+        finally:
+            await engine.dispose()
+
+    asset_root = tmp_path / "storage" / "assets"
+    asset_file = asset_root / "manual" / "clip.mp4"
+    asset_file.parent.mkdir(parents=True, exist_ok=True)
+    asset_file.write_bytes(b"fake-mp4")
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+    app.dependency_overrides[get_video_production_service] = _override_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/internal/videos/assets/register-local",
+                json={
+                    "relative_path": "manual/clip.mp4",
+                    "name": "Clip de fundo",
+                    "license_name": "generated-local",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "mp4" in response.json()["detail"].lower()
+    assert "not supported" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_internal_asset_selection_and_preview_block_mp4_backgrounds(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    asset_root = tmp_path / "storage" / "assets"
+    asset_file = asset_root / "manual" / "clip.mp4"
+    asset_file.parent.mkdir(parents=True, exist_ok=True)
+    asset_file.write_bytes(b"fake-mp4")
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+    mp4_asset = AssetPool(
+        asset_type="background_video",
+        name="Clip de fundo",
+        slug="clip-de-fundo",
+        source_url="local",
+        source_path=str(asset_file.resolve()),
+        license_name="generated-local",
+        license_url=None,
+        status=LifecycleStatus.ACTIVE,
+    )
+    db_session.add(mp4_asset)
+    await db_session.commit()
+    await db_session.refresh(mp4_asset)
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            tts_response = client.post(f"/internal/videos/{created.video_id}/tts", json={"execution_mode": "fake"})
+            assert tts_response.status_code == 200
+
+            captions_response = client.post(f"/internal/videos/{created.video_id}/captions", json={"execution_mode": "fake"})
+            assert captions_response.status_code == 200
+
+            asset_response = client.post(
+                f"/internal/videos/{created.video_id}/asset",
+                json={"asset_id": mp4_asset.id},
+            )
+            assert asset_response.status_code == 400
+            assert "mp4" in asset_response.json()["detail"].lower()
+
+            video = await db_session.get(Video, created.video_id)
+            assert video is not None
+            video.asset_id = mp4_asset.id
+            video.stage_status = VideoStageStatus.ASSET_READY
+            await db_session.commit()
+
+            preview_response = client.post(f"/internal/videos/{created.video_id}/preview")
+            assert preview_response.status_code == 400
+            assert "mp4" in preview_response.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

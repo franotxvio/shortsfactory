@@ -79,6 +79,8 @@ class RenderWorker:
 
         ensure_parent_dir(output_path)
         asset_path = Path(video.asset.source_path)
+        if asset_path.suffix.lower() == ".mp4":
+            raise ValueError("Background video assets (.mp4) are not supported yet")
         caption_path = Path(video.caption_path)
         safe_margin_x = max(64, width // 12)
         safe_margin_y = max(120, height // 8)

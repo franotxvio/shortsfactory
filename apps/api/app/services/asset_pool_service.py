@@ -99,6 +99,7 @@ class AssetPoolService:
         normalized_name = (name or resolved_path.stem.replace("-", " ").replace("_", " ").title()).strip()
         normalized_tags = self._normalize_tags(tags)
         normalized_asset_type = self._normalize_asset_type(asset_type, resolved_path)
+        self._ensure_supported_background_asset(resolved_path, normalized_asset_type)
         storage_path = str(resolved_path.resolve())
 
         statement = select(AssetPool).where(AssetPool.source_path == storage_path)
@@ -166,6 +167,10 @@ class AssetPoolService:
                 asset = await self._get_asset_by_id(asset_id)
                 if asset is None:
                     raise ValueError(f"Asset {asset_id} not found")
+                self._ensure_supported_background_asset(
+                    Path(asset.source_path) if asset.source_path else None,
+                    asset.asset_type,
+                )
                 return self._build_selection_result(video_id=video.id, asset=asset)
             raise ValueError("Asset can only be changed before preview is generated")
 
@@ -178,6 +183,10 @@ class AssetPoolService:
         )
         if asset is None:
             asset = await self._get_or_create_default_asset()
+        self._ensure_supported_background_asset(
+            Path(asset.source_path) if asset.source_path else None,
+            asset.asset_type,
+        )
 
         if video.stage_status not in {VideoStageStatus.CAPTION_DONE, VideoStageStatus.ASSET_READY}:
             raise ValueError("Asset can only be selected after captions are generated")
@@ -378,6 +387,12 @@ class AssetPoolService:
             raise ValueError("Unsupported asset file type")
 
         return resolved_path
+
+    def _ensure_supported_background_asset(self, path: Path | None, asset_type: str | None) -> None:
+        if path is not None and path.suffix.lower() == ".mp4":
+            raise ValueError("Background video assets (.mp4) are not supported yet")
+        if (asset_type or "").strip().lower() == "background_video":
+            raise ValueError("Background video assets (.mp4) are not supported yet")
 
     def _storage_relative_path(self, path: Path) -> str:
         storage_root = self.settings.local_storage_path.resolve().parent
