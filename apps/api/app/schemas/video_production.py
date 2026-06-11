@@ -56,6 +56,11 @@ class VideoPreviewRequest(BaseModel):
     visual_template: str = Field(default="default", max_length=64)
 
 
+class VideoPreviewRegenerateRequest(BaseModel):
+    asset_id: int | None = Field(default=None, ge=1)
+    visual_template: str | None = Field(default=None, max_length=64)
+
+
 class VideoAssetSelectionRequest(BaseModel):
     asset_id: int | None = Field(default=None, ge=1)
     asset_slug: str | None = Field(default=None, max_length=160)

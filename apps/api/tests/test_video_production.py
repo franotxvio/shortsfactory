@@ -176,6 +176,50 @@ async def _create_video_ready_for_preview(db_session, *, slug_suffix: str = "tem
     return video
 
 
+async def _create_video_with_optional_assets(
+    db_session,
+    *,
+    slug_suffix: str = "regen",
+    with_audio: bool = True,
+    with_caption: bool = True,
+    with_asset: bool = True,
+) -> Video:
+    channel = Channel(name="Regenerate Channel", slug=f"regen-{slug_suffix}")
+    asset = (
+        AssetPool(
+            asset_type="background_image",
+            name="Regenerate Asset",
+            slug=f"regen-asset-{slug_suffix}",
+            source_url="local",
+            source_path=f"storage/assets/manual/regen-{slug_suffix}.png",
+            license_name="generated-local",
+            license_url=None,
+            status=LifecycleStatus.ACTIVE,
+        )
+        if with_asset
+        else None
+    )
+    video = Video(
+        channel=channel,
+        title="Regenerate Video",
+        slug=f"regen-video-{slug_suffix}",
+        status=WorkflowStatus.APPROVED,
+        stage_status=VideoStageStatus.ASSET_READY,
+        asset=asset,
+        audio_path=f"storage/audio/regen-{slug_suffix}.mp3" if with_audio else None,
+        caption_path=f"storage/captions/regen-{slug_suffix}.srt" if with_caption else None,
+    )
+    db_session.add(channel)
+    if asset is not None:
+        db_session.add(asset)
+    db_session.add(video)
+    await db_session.commit()
+    await db_session.refresh(video)
+    if asset is not None:
+        await db_session.refresh(asset)
+    return video
+
+
 @pytest.mark.asyncio
 async def test_full_video_pipeline_generates_local_artifacts(db_session, tmp_path) -> None:
     await _create_approved_script(db_session)
@@ -456,6 +500,180 @@ async def test_internal_video_preview_dark_overlay_changes_render_parameters(
     command_text = " ".join(commands[0])
     assert "color=c=black@0.32" in command_text
     assert "FontSize=30" in command_text
+
+
+@pytest.mark.asyncio
+async def test_internal_video_preview_regenerate_replaces_approval_and_asset(
+    db_session,
+    temp_database_url: str,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    commands: list[list[str]] = []
+
+    def _fake_run_command(command: list[str]) -> None:
+        commands.append(command)
+        output_path = Path(command[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-render")
+
+    monkeypatch.setattr(render_worker_module, "run_command", _fake_run_command)
+
+    video = await _create_video_ready_for_preview(db_session, slug_suffix="regen")
+    replacement_asset = AssetPool(
+        asset_type="background_image",
+        name="Replacement Asset",
+        slug="replacement-asset",
+        source_url="local",
+        source_path="storage/assets/manual/replacement-asset.png",
+        license_name="generated-local",
+        license_url=None,
+        status=LifecycleStatus.ACTIVE,
+    )
+    db_session.add(replacement_asset)
+    await db_session.commit()
+    await db_session.refresh(replacement_asset)
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            preview_response = client.post(f"/internal/videos/{video.id}/preview")
+            assert preview_response.status_code == 200
+            preview_state = VideoPipelineResponse.model_validate(preview_response.json())
+            assert preview_state.stage_status == VideoStageStatus.PREVIEW_READY.value
+            assert Path(preview_state.preview_path or "").exists()
+
+            approve_response = client.post(f"/internal/videos/{video.id}/approve-preview")
+            assert approve_response.status_code == 200
+            approved_state = VideoPipelineResponse.model_validate(approve_response.json())
+            assert approved_state.preview_approved_at is not None
+
+            regenerate_response = client.post(
+                f"/internal/videos/{video.id}/preview/regenerate",
+                json={
+                    "asset_id": replacement_asset.id,
+                    "visual_template": "big_captions",
+                },
+            )
+            assert regenerate_response.status_code == 200
+            regenerated_state = VideoPipelineResponse.model_validate(regenerate_response.json())
+            assert regenerated_state.stage_status == VideoStageStatus.PREVIEW_READY.value
+            assert regenerated_state.preview_approved_at is None
+            assert regenerated_state.asset_id == replacement_asset.id
+            assert regenerated_state.visual_template == "big_captions"
+            assert regenerated_state.preview_path == preview_state.preview_path
+
+            status_response = client.get(f"/internal/videos/{video.id}/status")
+            assert status_response.status_code == 200
+            status_state = VideoPipelineResponse.model_validate(status_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert status_state.stage_status == VideoStageStatus.PREVIEW_READY.value
+    assert status_state.preview_approved_at is None
+    assert status_state.asset_id == replacement_asset.id
+    assert status_state.visual_template == "big_captions"
+    assert commands
+    assert "FontSize=38" in " ".join(commands[-1])
+
+
+@pytest.mark.asyncio
+async def test_internal_video_preview_regenerate_blocks_after_final_rendered(
+    db_session,
+    temp_database_url: str,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    def _fake_run_command(command: list[str]) -> None:
+        output_path = Path(command[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-render")
+
+    monkeypatch.setattr(render_worker_module, "run_command", _fake_run_command)
+
+    video = await _create_video_ready_for_preview(db_session, slug_suffix="finalized")
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            preview_response = client.post(f"/internal/videos/{video.id}/preview")
+            assert preview_response.status_code == 200
+
+            approve_response = client.post(f"/internal/videos/{video.id}/approve-preview")
+            assert approve_response.status_code == 200
+
+            final_response = client.post(f"/internal/videos/{video.id}/final")
+            assert final_response.status_code == 200
+            final_state = VideoPipelineResponse.model_validate(final_response.json())
+            assert final_state.stage_status == VideoStageStatus.FINAL_RENDERED.value
+
+            regenerate_response = client.post(f"/internal/videos/{video.id}/preview/regenerate")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert regenerate_response.status_code == 400
+    assert "after final render" in regenerate_response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("with_audio", "with_caption", "with_asset", "expected_detail"),
+    [
+        (False, True, True, "Audio is required before regenerating preview"),
+        (True, False, True, "Captions are required before regenerating preview"),
+        (True, True, False, "Video asset is required before regenerating preview"),
+    ],
+)
+async def test_internal_video_preview_regenerate_blocks_missing_inputs(
+    db_session,
+    temp_database_url: str,
+    with_audio: bool,
+    with_caption: bool,
+    with_asset: bool,
+    expected_detail: str,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    video = await _create_video_with_optional_assets(
+        db_session,
+        slug_suffix=f"{int(with_audio)}-{int(with_caption)}-{int(with_asset)}",
+        with_audio=with_audio,
+        with_caption=with_caption,
+        with_asset=with_asset,
+    )
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            regenerate_response = client.post(f"/internal/videos/{video.id}/preview/regenerate")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert regenerate_response.status_code == 400
+    assert expected_detail in regenerate_response.json()["detail"]
 
 
 @pytest.mark.asyncio

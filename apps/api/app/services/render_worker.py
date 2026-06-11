@@ -51,6 +51,32 @@ class RenderWorker:
         await self.session.flush()
         return RenderResult(video_id=video.id, output_path=str(output_path))
 
+    async def regenerate_preview(self, *, video_id: int, visual_template: str | None = None) -> RenderResult:
+        video = await self._require_video_assets(video_id)
+        if video.stage_status == VideoStageStatus.FINAL_RENDERED:
+            raise ValueError("Preview cannot be regenerated after final render")
+
+        if visual_template is None:
+            resolved_template = self.get_visual_template(video_id)
+        else:
+            resolved_template = self._normalize_visual_template(visual_template)
+
+        output_path = self.settings.preview_output_path / f"{video.slug}.mp4"
+        self._render(
+            video=video,
+            output_path=output_path,
+            width=self.settings.preview_width,
+            height=self.settings.preview_height,
+            preset="veryfast",
+            visual_template=resolved_template,
+        )
+        self._write_visual_template(video_id=video.id, visual_template=resolved_template)
+        video.preview_path = str(output_path)
+        video.preview_approved_at = None
+        video.stage_status = VideoStageStatus.PREVIEW_READY
+        await self.session.flush()
+        return RenderResult(video_id=video.id, output_path=str(output_path))
+
     async def approve_preview(self, *, video_id: int) -> RenderResult:
         video = await self.session.get(Video, video_id)
         if video is None:

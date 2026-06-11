@@ -177,6 +177,7 @@ export default function DashboardPage() {
   const selectedVideoIdRef = useRef<number | null>(null);
   const [scriptDraft, setScriptDraft] = useState("");
   const [selectedVisualTemplate, setSelectedVisualTemplate] = useState(DEFAULT_VISUAL_TEMPLATE);
+  const [pendingAssetId, setPendingAssetId] = useState<number | null>(null);
   const [assetFilePath, setAssetFilePath] = useState(DEFAULT_ASSET_FORM.filePath);
   const [assetName, setAssetName] = useState(DEFAULT_ASSET_FORM.name);
   const [assetSlug, setAssetSlug] = useState(DEFAULT_ASSET_FORM.slug);
@@ -192,9 +193,17 @@ export default function DashboardPage() {
     () => videos.find((video) => video.video_id === selectedVideoId) ?? null,
     [selectedVideoId, videos],
   );
+  const selectedVideoVisualTemplate = selectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE;
   const scriptEditable = selectedVideo?.stage_status === "script_approved";
   const pipelineCompleted =
     selectedVideo?.stage_status === "final_rendered" || selectedVideo?.status === "completed";
+  const previewNeedsRefresh = Boolean(
+    selectedVideo &&
+      selectedVideo.preview_path &&
+      selectedVideo.stage_status !== "final_rendered" &&
+      selectedVideo.status !== "completed" &&
+      (pendingAssetId !== null || selectedVisualTemplate !== selectedVideoVisualTemplate),
+  );
 
   function buildScriptDraft(video: VideoItem | null) {
     if (!video) {
@@ -230,11 +239,18 @@ export default function DashboardPage() {
   }
 
   function canChangeTemplate(video: VideoItem | null) {
-    if (!video) {
-      return false;
-    }
-    const lockedStages = ["preview_ready", "preview_approved", "final_rendered"];
-    return !lockedStages.includes(video.stage_status);
+    return Boolean(video && video.stage_status !== "final_rendered" && video.status !== "completed");
+  }
+
+  function canRegeneratePreview(video: VideoItem | null) {
+    return Boolean(
+      video &&
+        video.audio_path &&
+        video.caption_path &&
+        video.asset_path &&
+        video.stage_status !== "final_rendered" &&
+        video.status !== "completed",
+    );
   }
 
   function parseTagsInput(value: string) {
@@ -268,6 +284,7 @@ export default function DashboardPage() {
       const nextSelectedVideo = items.find((item) => item.video_id === nextSelectedId) ?? null;
       setScriptDraft(buildScriptDraft(nextSelectedVideo));
       setSelectedVisualTemplate(nextSelectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
+      setPendingAssetId(null);
       if (!quiet) {
         setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
       }
@@ -311,6 +328,7 @@ export default function DashboardPage() {
     selectedVideoIdRef.current = nextVideo.video_id;
     setScriptDraft(buildScriptDraft(nextVideo));
     setSelectedVisualTemplate(nextVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
+    setPendingAssetId(null);
   }
 
   function selectVideo(video: VideoItem) {
@@ -318,6 +336,7 @@ export default function DashboardPage() {
     selectedVideoIdRef.current = video.video_id;
     setScriptDraft(buildScriptDraft(video));
     setSelectedVisualTemplate(video.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
+    setPendingAssetId(null);
   }
 
   async function createFakeVideo() {
@@ -432,7 +451,34 @@ export default function DashboardPage() {
       setMessage({ kind: "error", text: error.message });
       return;
     }
-    if (!canSelectAsset(selectedVideo)) {
+    if (canSelectAsset(selectedVideo)) {
+      setBusyAction(`asset-${asset.asset_id}`);
+      try {
+        const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/asset`, {
+          method: "POST",
+          body: JSON.stringify({
+            asset_id: asset.asset_id,
+          }),
+        });
+        mergeVideo(updated);
+        setPendingAssetId(null);
+        if (!options?.quiet) {
+          setMessage({ kind: "success", text: `Asset ${asset.name} aplicado ao video ${selectedVideoId}.` });
+        }
+        void loadVideos({ quiet: true });
+        void loadAssets({ quiet: true });
+      } catch (error) {
+        if (options?.quiet) {
+          throw error;
+        }
+        setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao aplicar asset." });
+      } finally {
+        setBusyAction(null);
+      }
+      return;
+    }
+
+    if (!canRegeneratePreview(selectedVideo)) {
       const error = new Error("Asset so pode ser trocado antes do preview, depois das captions.");
       if (options?.quiet) {
         throw error;
@@ -441,27 +487,12 @@ export default function DashboardPage() {
       return;
     }
 
-    setBusyAction(`asset-${asset.asset_id}`);
-    try {
-      const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/asset`, {
-        method: "POST",
-        body: JSON.stringify({
-          asset_id: asset.asset_id,
-        }),
+    setPendingAssetId(asset.asset_id);
+    if (!options?.quiet) {
+      setMessage({
+        kind: "success",
+        text: `Asset ${asset.name} selecionado para regeneracao do preview do video ${selectedVideoId}.`,
       });
-      mergeVideo(updated);
-      if (!options?.quiet) {
-        setMessage({ kind: "success", text: `Asset ${asset.name} aplicado ao video ${selectedVideoId}.` });
-      }
-      void loadVideos({ quiet: true });
-      void loadAssets({ quiet: true });
-    } catch (error) {
-      if (options?.quiet) {
-        throw error;
-      }
-      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao aplicar asset." });
-    } finally {
-      setBusyAction(null);
     }
   }
 
@@ -500,6 +531,14 @@ export default function DashboardPage() {
           });
           return;
         }
+      }
+      if (selectedVideoId !== null && canRegeneratePreview(selectedVideo)) {
+        setPendingAssetId(created.asset_id);
+        setMessage({
+          kind: "success",
+          text: "Asset cadastrado. Asset selecionado para regeneracao do preview.",
+        });
+        return;
       }
       setMessage({ kind: "success", text: "Asset cadastrado." });
     } catch (error) {
@@ -577,6 +616,43 @@ export default function DashboardPage() {
       void loadAssets({ quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : `Falha ao executar ${stepLabels[step]}.` });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function regeneratePreview() {
+    if (selectedVideoId === null || selectedVideo === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de regenerar o preview." });
+      return;
+    }
+    if (!canRegeneratePreview(selectedVideo)) {
+      setMessage({
+        kind: "error",
+        text: "Preview so pode ser regenerado depois de audio, captions e asset estarem disponiveis.",
+      });
+      return;
+    }
+
+    setBusyAction("regenerate-preview");
+    try {
+      const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/preview/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({
+          asset_id: pendingAssetId ?? undefined,
+          visual_template: selectedVisualTemplate,
+        }),
+      });
+      mergeVideo(updated);
+      setPendingAssetId(null);
+      setMessage({ kind: "success", text: `Preview regenerado com sucesso para o video ${selectedVideoId}.` });
+      void loadVideos({ quiet: true });
+      void loadAssets({ quiet: true });
+    } catch (error) {
+      setMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "Falha ao regenerar o preview.",
+      });
     } finally {
       setBusyAction(null);
     }
@@ -777,11 +853,22 @@ export default function DashboardPage() {
                 </p>
               ) : null}
               <p>
-                <strong>Template visual:</strong> {selectedVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE}
+                <strong>Template visual atual:</strong> {selectedVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE}
               </p>
+              {previewNeedsRefresh ? (
+                <p>
+                  <strong>Template selecionado:</strong> {selectedVisualTemplate}
+                </p>
+              ) : null}
               <p>
                 <strong>Asset:</strong> {selectedVideo.asset_id ?? "pendente"}
               </p>
+              {pendingAssetId !== null ? (
+                <p>
+                  <strong>Asset selecionado para regenerar:</strong>{" "}
+                  {assets.find((asset) => asset.asset_id === pendingAssetId)?.name ?? `#${pendingAssetId}`}
+                </p>
+              ) : null}
               {selectedVideo.asset_name || selectedVideo.asset_slug || selectedVideo.asset_type ? (
                 <div className="detail-asset">
                   <p>
@@ -846,8 +933,13 @@ export default function DashboardPage() {
                   </select>
                 </label>
                 <p className="helper">
-                  O template altera apenas preview/final. Depois de preview_ready, a troca fica bloqueada.
+                  O template altera apenas preview/final. Depois do final render, a troca fica bloqueada.
                 </p>
+                {previewNeedsRefresh ? (
+                  <p className="warning">
+                    Ha mudancas visuais pendentes. Regenerar preview para aplicar o asset/template selecionado.
+                  </p>
+                ) : null}
               </div>
               <div className="stage-step-grid">
                 <button
@@ -880,15 +972,22 @@ export default function DashboardPage() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => void regeneratePreview()}
+                  disabled={busyAction !== null || !canRegeneratePreview(selectedVideo) || !selectedVideo?.preview_path}
+                >
+                  {busyAction === "regenerate-preview" ? "Regenerando..." : "Regenerar preview"}
+                </button>
+                <button
+                  type="button"
                   onClick={() => void runPipelineStep("approve-preview")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_ready")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_ready") || previewNeedsRefresh}
                 >
                   {busyAction === "approve-preview" ? "Aprovando..." : "Aprovar preview"}
                 </button>
                 <button
                   type="button"
                   onClick={() => void runPipelineStep("final")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_approved")}
+                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_approved") || previewNeedsRefresh}
                 >
                   {busyAction === "final" ? "Renderizando..." : "Render final"}
                 </button>
@@ -911,6 +1010,11 @@ export default function DashboardPage() {
               <p className="helper">
                 Use um asset local antes do preview. O fallback padrao continua disponivel se nada for escolhido.
               </p>
+              {previewNeedsRefresh ? (
+                <p className="warning">
+                  O asset ou template atual foi alterado. Use {'"'}Regenerar preview{'"'} para atualizar o video selecionado.
+                </p>
+              ) : null}
               <div className="asset-form">
                 <div className="asset-form-grid">
                   <label className="field">
@@ -958,10 +1062,14 @@ export default function DashboardPage() {
                 ) : (
                   assets.map((asset) => {
                     const isSelected = selectedVideo?.asset_id === asset.asset_id;
+                    const isPending = pendingAssetId === asset.asset_id;
                     const isBusy = busyAction === `asset-${asset.asset_id}`;
-                    const canUse = canSelectAsset(selectedVideo) || isSelected;
+                    const canUse = canSelectAsset(selectedVideo) || canRegeneratePreview(selectedVideo);
                     return (
-                      <article key={asset.asset_id} className={`asset-card${isSelected ? " selected" : ""}`}>
+                      <article
+                        key={asset.asset_id}
+                        className={`asset-card${isSelected ? " selected" : ""}${isPending ? " pending" : ""}`}
+                      >
                         <div className="video-card-top">
                           <div>
                             <p className="video-id">Asset #{asset.asset_id}</p>
@@ -983,9 +1091,17 @@ export default function DashboardPage() {
                             type="button"
                             className="primary secondary"
                             onClick={() => void applyAsset(asset)}
-                            disabled={!canUse || busyAction !== null || isSelected}
+                            disabled={!canUse || busyAction !== null || (isSelected && !isPending)}
                           >
-                            {isBusy ? "Aplicando..." : isSelected ? "Asset atual" : "Usar este asset"}
+                            {isBusy
+                              ? "Aplicando..."
+                              : isPending
+                                ? "Selecionado para regenerar"
+                                : isSelected
+                                  ? "Asset atual"
+                                  : canSelectAsset(selectedVideo)
+                                    ? "Usar este asset"
+                                    : "Selecionar para regenerar"}
                           </button>
                         </div>
                       </article>

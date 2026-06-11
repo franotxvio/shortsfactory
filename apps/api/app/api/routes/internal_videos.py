@@ -18,6 +18,7 @@ from app.schemas.video_production import (
     VideoListResponse,
     VideoPipelineResponse,
     VideoPreviewRequest,
+    VideoPreviewRegenerateRequest,
     VideoScriptUpdateRequest,
     VideoProductionRequest,
     VideoProductionResponse,
@@ -356,6 +357,26 @@ async def render_preview(
         )
         await _commit_if_available(service)
         result = await service.get_status(video_id=video_id)
+    except ValueError as error:
+        await _rollback_if_available(service)
+        _raise_http_error(error)
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
+
+
+@router.post("/{video_id}/preview/regenerate", response_model=VideoPipelineResponse)
+async def regenerate_preview(
+    video_id: int,
+    payload: VideoPreviewRegenerateRequest | None = Body(default=None),
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> VideoPipelineResponse:
+    try:
+        result = await service.regenerate_preview(
+            video_id=video_id,
+            asset_id=payload.asset_id if payload is not None else None,
+            visual_template=payload.visual_template if payload is not None else None,
+        )
+        await _commit_if_available(service)
     except ValueError as error:
         await _rollback_if_available(service)
         _raise_http_error(error)

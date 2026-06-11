@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -343,6 +344,45 @@ class VideoProductionService:
 
     async def render_preview(self, *, video_id: int, visual_template: str | None = None):
         return await self.render_worker.render_preview(video_id=video_id, visual_template=visual_template)
+
+    async def regenerate_preview(
+        self,
+        *,
+        video_id: int,
+        asset_id: int | None = None,
+        visual_template: str | None = None,
+    ) -> VideoPipelineState:
+        statement = select(Video).options(selectinload(Video.asset), selectinload(Video.channel)).where(Video.id == video_id)
+        video = await self.session.scalar(statement)
+        if video is None:
+            raise ValueError(f"Video {video_id} not found")
+        if video.stage_status == VideoStageStatus.FINAL_RENDERED or video.status == WorkflowStatus.COMPLETED:
+            raise ValueError("Preview cannot be regenerated after final render")
+        if not video.audio_path:
+            raise ValueError("Audio is required before regenerating preview")
+        if not video.caption_path:
+            raise ValueError("Captions are required before regenerating preview")
+
+        if asset_id is not None:
+            asset = await self.asset_service._get_asset_by_id(asset_id)
+            if asset is None:
+                raise ValueError(f"Asset {asset_id} not found")
+            self.asset_service._ensure_supported_background_asset(
+                Path(asset.source_path) if asset.source_path else None,
+                asset.asset_type,
+            )
+            video.asset_id = asset.id
+            video.asset = asset
+            await self.session.flush()
+        elif video.asset is None or not video.asset.source_path:
+            raise ValueError("Video asset is required before regenerating preview")
+
+        video.preview_approved_at = None
+        video.stage_status = VideoStageStatus.ASSET_READY
+        await self.session.flush()
+
+        await self.render_worker.regenerate_preview(video_id=video_id, visual_template=visual_template)
+        return await self.get_status(video_id=video_id)
 
     async def approve_preview(self, *, video_id: int):
         return await self.render_worker.approve_preview(video_id=video_id)
