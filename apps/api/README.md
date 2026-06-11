@@ -38,3 +38,10 @@ Resposta esperada:
 cd apps/api
 pytest
 ```
+
+## Migrations
+
+```bash
+cd apps/api
+python -m alembic upgrade head
+```

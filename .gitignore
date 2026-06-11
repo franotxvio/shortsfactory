@@ -22,3 +22,6 @@ storage/captions/*
 !storage/renders/finals/.gitkeep
 !storage/audio/.gitkeep
 !storage/captions/.gitkeep
+
+# Python packaging artifacts
+*.egg-info/
