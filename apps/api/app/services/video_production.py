@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -64,6 +65,10 @@ class VideoProductionResult:
     performance_label: str = "unknown"
     performance_notes: str | None = None
     performance_reason_tags: list[str] | None = None
+    content_brain_context_used: bool = False
+    winning_signals_count: int = 0
+    weak_signals_count: int = 0
+    applied_reason_tags: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -99,6 +104,10 @@ class VideoPipelineState:
     performance_label: str = "unknown"
     performance_notes: str | None = None
     performance_reason_tags: list[str] | None = None
+    content_brain_context_used: bool = False
+    winning_signals_count: int = 0
+    weak_signals_count: int = 0
+    applied_reason_tags: list[str] | None = None
 
 
 class _DeterministicTTSClient:
@@ -176,6 +185,10 @@ class VideoProductionService:
             estimated_duration_seconds=final_state.estimated_duration_seconds,
             style_tone=final_state.style_tone,
             target_duration_seconds=final_state.target_duration_seconds,
+            content_brain_context_used=final_state.content_brain_context_used,
+            winning_signals_count=final_state.winning_signals_count,
+            weak_signals_count=final_state.weak_signals_count,
+            applied_reason_tags=final_state.applied_reason_tags,
         )
 
     async def list_recent_videos(self, *, limit: int = 20) -> list[VideoPipelineState]:
@@ -209,6 +222,10 @@ class VideoProductionService:
                     call_to_action=script_metadata["call_to_action"],
                     estimated_duration_seconds=script_metadata["estimated_duration_seconds"],
                     style_tone=script_metadata["style_tone"],
+                    content_brain_context_used=bool(script_metadata["content_brain_context_used"]),
+                    winning_signals_count=int(script_metadata["winning_signals_count"] or 0),
+                    weak_signals_count=int(script_metadata["weak_signals_count"] or 0),
+                    applied_reason_tags=list(script_metadata["applied_reason_tags"] or []),
                 )
             )
         return states
@@ -600,6 +617,10 @@ class VideoProductionService:
                 target_duration_seconds=target_duration,
                 content_brain_context=content_brain_context,
             )
+            content_brain_context_used = bool(script_content.get("content_brain_context_used"))
+            winning_signals_count = int(script_content.get("winning_signals_count") or 0)
+            weak_signals_count = int(script_content.get("weak_signals_count") or 0)
+            applied_reason_tags = list(script_content.get("applied_reason_tags") or [])
             preset_asset = await self._get_asset_by_slug(preset.default_asset_slug) if preset and preset.default_asset_slug else None
             if preset_asset is not None:
                 self.asset_service._ensure_supported_background_asset(
@@ -631,6 +652,14 @@ class VideoProductionService:
                     "channel_name": channel_name_to_use,
                     "video_title": video_title,
                     "content_brain_context": content_brain_context,
+                    "content_brain": {
+                        "context_used": content_brain_context_used,
+                        "winning_patterns": (content_brain_context or {}).get("winning_patterns", []) if content_brain_context else [],
+                        "weak_patterns": (content_brain_context or {}).get("weak_patterns", []) if content_brain_context else [],
+                        "winning_signals_count": winning_signals_count,
+                        "weak_signals_count": weak_signals_count,
+                        "applied_reason_tags": applied_reason_tags,
+                    },
                     "script": script_content,
                 },
                 llm_model="local-fake",
@@ -660,6 +689,10 @@ class VideoProductionService:
                 style_tone=script_content["style_tone"],
                 visual_template=preset.default_visual_template if preset is not None else None,
                 target_duration_seconds=target_duration,
+                content_brain_context_used=content_brain_context_used,
+                winning_signals_count=winning_signals_count,
+                weak_signals_count=weak_signals_count,
+                applied_reason_tags=applied_reason_tags,
             )
         return state
 
@@ -726,6 +759,10 @@ class VideoProductionService:
             style_tone=result.style_tone,
             visual_template=preset.default_visual_template if preset is not None else None,
             target_duration_seconds=video.target_duration_seconds,
+            content_brain_context_used=result.content_brain_context_used,
+            winning_signals_count=result.winning_signals_count,
+            weak_signals_count=result.weak_signals_count,
+            applied_reason_tags=result.applied_reason_tags,
         )
 
     async def _get_or_create_channel(self, *, channel_slug: str, channel_name: str) -> Channel:
@@ -772,6 +809,10 @@ class VideoProductionService:
         call_to_action: str | None = None,
         estimated_duration_seconds: int | None = None,
         style_tone: str | None = None,
+        content_brain_context_used: bool = False,
+        winning_signals_count: int = 0,
+        weak_signals_count: int = 0,
+        applied_reason_tags: list[str] | None = None,
         visual_template: str | None = None,
         target_duration_seconds: int | None = None,
     ) -> VideoPipelineState:
@@ -804,6 +845,10 @@ class VideoProductionService:
             call_to_action=call_to_action,
             estimated_duration_seconds=estimated_duration_seconds,
             style_tone=style_tone,
+            content_brain_context_used=content_brain_context_used,
+            winning_signals_count=winning_signals_count,
+            weak_signals_count=weak_signals_count,
+            applied_reason_tags=applied_reason_tags,
             visual_template=resolved_visual_template,
             target_duration_seconds=target_duration_seconds if target_duration_seconds is not None else video.target_duration_seconds,
             performance_label=performance_record.performance_label,
@@ -836,6 +881,10 @@ class VideoProductionService:
             performance_label=state.performance_label,
             performance_notes=state.performance_notes,
             performance_reason_tags=state.performance_reason_tags,
+            content_brain_context_used=state.content_brain_context_used,
+            winning_signals_count=state.winning_signals_count,
+            weak_signals_count=state.weak_signals_count,
+            applied_reason_tags=state.applied_reason_tags,
         )
 
     def _build_fake_script(self, *, topic: str) -> str:
@@ -863,15 +912,60 @@ class VideoProductionService:
             f"Se precisar de mais contexto, conecte {topic_text} a um exemplo simples do dia a dia.",
             "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
         ]
-        body_blocks = body_templates[:body_count]
-        call_to_action = (
-            default_cta
-            or "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+        winning_patterns = []
+        weak_patterns = []
+        if isinstance(content_brain_context, dict):
+            winning_patterns = [entry for entry in content_brain_context.get("winning_patterns", []) if isinstance(entry, dict)]
+            weak_patterns = [entry for entry in content_brain_context.get("weak_patterns", []) if isinstance(entry, dict)]
+
+        def _collect_reason_tags(patterns: list[dict[str, object]]) -> list[str]:
+            collected: list[str] = []
+            for entry in patterns:
+                tags = entry.get("reason_tags")
+                if not isinstance(tags, list):
+                    continue
+                for tag in tags:
+                    text = str(tag).strip()
+                    if text and text not in collected:
+                        collected.append(text)
+            return collected
+
+        winning_tags = _collect_reason_tags(winning_patterns)
+        weak_tags = _collect_reason_tags(weak_patterns)
+        normalized_winning_tags = {
+            unicodedata.normalize("NFKD", tag).encode("ascii", "ignore").decode("ascii").lower().strip()
+            for tag in winning_tags
+        }
+        normalized_weak_tags = {
+            unicodedata.normalize("NFKD", tag).encode("ascii", "ignore").decode("ascii").lower().strip()
+            for tag in weak_tags
+        }
+        if "curiosidade" in normalized_winning_tags:
+            hook = f"Voce ja percebeu essa curiosidade sobre {topic_text}?"
+        elif winning_tags:
+            hook = f"Esse padrao vencedor sobre {topic_text} chama atencao rapido."
+        if any(tag in {"generico", "generic"} for tag in normalized_weak_tags):
+            body_blocks = [
+                f"Abra com um exemplo concreto de {topic_text} para evitar uma introducao generica.",
+                f"Mostre um caso real que torne {topic_text} facil de imaginar.",
+                "Feche com uma acao objetiva em vez de uma explicacao longa e abstrata.",
+            ]
+        else:
+            body_blocks = body_templates[:body_count]
+        if winning_tags:
+            body_blocks[-1] = f"Feche reforcando o padrao vencedor de {', '.join(winning_tags[:2])} para manter o ritmo."
+        call_to_action = default_cta or (
+            "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
         )
-        estimated_duration_seconds = (
-            target_duration_seconds if target_duration_seconds is not None else 24 + len(body_blocks) * 6
-        )
+        if "cta" in normalized_winning_tags:
+            call_to_action = "Se isso fez sentido, salva e manda para quem precisa ver esse atalho."
+        estimated_duration_seconds = target_duration_seconds if target_duration_seconds is not None else 24 + len(body_blocks) * 6
         script_text = "\n\n".join([hook, *body_blocks, call_to_action])
+        applied_reason_tags = []
+        applied_reason_tags.extend(winning_tags[:3])
+        for tag in weak_tags:
+            if tag not in applied_reason_tags:
+                applied_reason_tags.append(tag)
         return {
             "title": f"Roteiro curto: {topic_text}",
             "hook": hook,
@@ -880,7 +974,11 @@ class VideoProductionService:
             "estimated_duration_seconds": estimated_duration_seconds,
             "style_tone": style_tone or "didatico e direto",
             "script": script_text,
-            "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
+            "beats": ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))], "cta"],
+            "content_brain_context_used": bool(winning_patterns or weak_patterns),
+            "winning_signals_count": len(winning_patterns),
+            "weak_signals_count": len(weak_patterns),
+            "applied_reason_tags": applied_reason_tags,
             "content_brain_context": content_brain_context,
         }
 
@@ -888,7 +986,7 @@ class VideoProductionService:
         statement = select(Script).where(Script.video_id == video_id).order_by(Script.version.desc())
         return await self.session.scalar(statement)
 
-    async def _get_latest_script_metadata(self, *, video_id: int) -> dict[str, int | str | list[str] | None]:
+    async def _get_latest_script_metadata(self, *, video_id: int) -> dict[str, int | str | bool | list[str] | None]:
         script = await self._get_latest_script(video_id=video_id)
         if script is None:
             return {
@@ -900,6 +998,10 @@ class VideoProductionService:
                 "call_to_action": None,
                 "estimated_duration_seconds": None,
                 "style_tone": None,
+                "content_brain_context_used": False,
+                "winning_signals_count": 0,
+                "weak_signals_count": 0,
+                "applied_reason_tags": None,
             }
 
         generation_payload = script.generation_payload if isinstance(script.generation_payload, dict) else {}
@@ -922,6 +1024,11 @@ class VideoProductionService:
                 body_blocks=body_blocks,
                 call_to_action=call_to_action,
             )
+        content_brain_payload = generation_payload.get("content_brain") if isinstance(generation_payload, dict) else None
+        content_brain_context_used = bool(content_brain_payload.get("context_used")) if isinstance(content_brain_payload, dict) else False
+        winning_signals_count = int(content_brain_payload.get("winning_signals_count") or 0) if isinstance(content_brain_payload, dict) else 0
+        weak_signals_count = int(content_brain_payload.get("weak_signals_count") or 0) if isinstance(content_brain_payload, dict) else 0
+        applied_reason_tags = self._coerce_string_list(content_brain_payload.get("applied_reason_tags")) if isinstance(content_brain_payload, dict) else []
         return {
             "script_id": script.id,
             "script_status": script.status.value,
@@ -931,6 +1038,10 @@ class VideoProductionService:
             "call_to_action": call_to_action,
             "estimated_duration_seconds": estimated_duration_seconds,
             "style_tone": style_tone,
+            "content_brain_context_used": content_brain_context_used,
+            "winning_signals_count": winning_signals_count,
+            "weak_signals_count": weak_signals_count,
+            "applied_reason_tags": applied_reason_tags,
         }
 
     def _split_script_text(self, script_text: str) -> list[str]:

@@ -32,6 +32,10 @@ type VideoItem = {
   style_tone?: string | null;
   visual_template?: string | null;
   target_duration_seconds?: number | null;
+  content_brain_context_used?: boolean;
+  winning_signals_count?: number;
+  weak_signals_count?: number;
+  applied_reason_tags?: string[] | null;
   performance_label?: string | null;
   performance_notes?: string | null;
   performance_reason_tags?: string[] | null;
@@ -1339,6 +1343,9 @@ export default function DashboardPage() {
                         <span className={`badge ${performanceClass === "winning" ? "success" : performanceClass === "weak" ? "warning" : "subtle"}`}>
                           {video.performance_label ?? "unknown"}
                         </span>
+                        <span className={`badge ${video.content_brain_context_used ? "success" : "subtle"}`}>
+                          CB {video.content_brain_context_used ? "on" : "off"}
+                        </span>
                         <span className="badge subtle">template: {video.visual_template ?? DEFAULT_VISUAL_TEMPLATE}</span>
                         {video.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
                       </div>
@@ -1418,6 +1425,29 @@ export default function DashboardPage() {
                   <strong>Tom:</strong> {selectedVideo.style_tone}
                 </p>
               ) : null}
+              <div className="detail-asset">
+                <div className="panel-header">
+                  <h3>ContentBrain aplicado</h3>
+                  <span className="panel-hint">
+                    {selectedVideo.content_brain_context_used ? "sinais usados no roteiro" : "nenhum sinal aplicado"}
+                  </span>
+                </div>
+                <p>
+                  <strong>Usado:</strong> {selectedVideo.content_brain_context_used ? "sim" : "nao"}
+                </p>
+                <p>
+                  <strong>Winning:</strong> {selectedVideo.winning_signals_count ?? 0}
+                </p>
+                <p>
+                  <strong>Weak:</strong> {selectedVideo.weak_signals_count ?? 0}
+                </p>
+                {selectedVideo.applied_reason_tags?.length ? (
+                  <div>
+                    <strong>Tags aplicadas:</strong>
+                    <AssetTags tags={selectedVideo.applied_reason_tags} />
+                  </div>
+                ) : null}
+              </div>
               <div className="detail-asset">
                 <div className="panel-header">
                   <h3>ContentBrain local</h3>

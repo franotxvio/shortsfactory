@@ -42,6 +42,10 @@ class VideoProductionResponse(BaseModel):
     performance_label: str = "unknown"
     performance_notes: str | None = None
     performance_reason_tags: list[str] | None = None
+    content_brain_context_used: bool = False
+    winning_signals_count: int = 0
+    weak_signals_count: int = 0
+    applied_reason_tags: list[str] | None = None
 
 
 class VideoCreateRequest(BaseModel):
@@ -146,6 +150,10 @@ class VideoPipelineResponse(BaseModel):
     performance_label: str = "unknown"
     performance_notes: str | None = None
     performance_reason_tags: list[str] | None = None
+    content_brain_context_used: bool = False
+    winning_signals_count: int = 0
+    weak_signals_count: int = 0
+    applied_reason_tags: list[str] | None = None
 
 
 class ChannelPresetUpsertRequest(BaseModel):

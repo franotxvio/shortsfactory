@@ -135,16 +135,20 @@ class ContentBrainService:
         if not signals:
             return None
 
-        winning_examples = [self._record_summary(record) for record in signals if record.performance_label == "winning"][:limit]
-        weak_examples = [self._record_summary(record) for record in signals if record.performance_label == "weak"][:limit]
-        if not winning_examples and not weak_examples:
+        winning_patterns = [self._record_summary(record) for record in signals if record.performance_label == "winning"][:limit]
+        weak_patterns = [self._record_summary(record) for record in signals if record.performance_label == "weak"][:limit]
+        if not winning_patterns and not weak_patterns:
             return None
 
         return {
             "channel_slug": channel_slug,
             "topic": topic,
-            "winning_examples": winning_examples,
-            "weak_examples": weak_examples,
+            "winning_patterns": winning_patterns,
+            "weak_patterns": weak_patterns,
+            "winning_examples": winning_patterns,
+            "weak_examples": weak_patterns,
+            "winning_signals_count": sum(1 for record in signals if record.performance_label == "winning"),
+            "weak_signals_count": sum(1 for record in signals if record.performance_label == "weak"),
             "winning_count": sum(1 for record in signals if record.performance_label == "winning"),
             "weak_count": sum(1 for record in signals if record.performance_label == "weak"),
         }

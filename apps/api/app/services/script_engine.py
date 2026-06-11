@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import uuid4
@@ -43,6 +44,11 @@ def _coerce_string_list(value: object) -> list[str]:
         if text:
             items.append(text)
     return items
+
+
+def _normalize_reason_tag(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return normalized.lower().strip()
 
 
 def _default_body_blocks(topic: str) -> list[str]:
@@ -134,6 +140,10 @@ class ScriptGenerationResult:
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
     script_text: str | None = None
+    content_brain_context_used: bool = False
+    winning_signals_count: int = 0
+    weak_signals_count: int = 0
+    applied_reason_tags: list[str] | None = None
 
 
 class _DeterministicLLMClient:
@@ -216,6 +226,7 @@ class ScriptEngineService:
         content_brain_context: dict[str, object] | None = None,
     ) -> ScriptGenerationResult:
         llm_client, provider_name, record_cost_logs = self._get_llm_client(execution_mode)
+        content_brain_summary = self._normalize_content_brain_context(content_brain_context)
         async with self.session.begin():
             channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name)
 
@@ -231,8 +242,20 @@ class ScriptEngineService:
                 style_tone=style_tone,
                 default_call_to_action=default_call_to_action,
                 target_duration_seconds=target_duration_seconds,
-                content_brain_context=content_brain_context,
+                content_brain_context=content_brain_summary,
             )
+            if execution_mode == VideoExecutionMode.FAKE and content_brain_summary is not None:
+                applied_script, applied_tags = self._apply_content_brain_context_to_script(
+                    script_content=dict(script.content),
+                    topic=topic,
+                    content_brain_context=content_brain_summary,
+                    default_call_to_action=default_call_to_action,
+                    style_tone=style_tone,
+                    target_duration_seconds=target_duration_seconds,
+                )
+                script.content = applied_script
+                script.raw_content = _json_dumps(applied_script)
+                content_brain_summary = {**content_brain_summary, "applied_reason_tags": applied_tags}
             policy = await self._policy_check(topic=topic, script=script, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
             normalized_script = _normalize_script_payload(
                 script.content,
@@ -260,6 +283,7 @@ class ScriptEngineService:
                 "hook": hook.content,
                 "script": normalized_script,
                 "policy": policy.content,
+                "content_brain": content_brain_summary,
                 "content_brain_context": content_brain_context,
             }
             script_row = Script(
@@ -303,6 +327,10 @@ class ScriptEngineService:
                     "script": bool(script.content.get("cache_hit")),
                     "policy": bool(policy.content.get("cache_hit")),
                 },
+                content_brain_context_used=bool(content_brain_summary),
+                winning_signals_count=int((content_brain_summary or {}).get("winning_signals_count") or 0),
+                weak_signals_count=int((content_brain_summary or {}).get("weak_signals_count") or 0),
+                applied_reason_tags=list((content_brain_summary or {}).get("applied_reason_tags") or []),
             )
 
     async def _get_or_create_channel(self, *, channel_slug: str, channel_name: str) -> Channel:
@@ -379,15 +407,21 @@ class ScriptEngineService:
         hook_text = str(hook.content.get("hook") or "")
         content_brain_context_text = ""
         if content_brain_context:
-            winning_examples = content_brain_context.get("winning_examples")
-            weak_examples = content_brain_context.get("weak_examples")
+            winning_patterns = content_brain_context.get("winning_patterns") or content_brain_context.get("winning_examples")
+            weak_patterns = content_brain_context.get("weak_patterns") or content_brain_context.get("weak_examples")
             context_blob = {
-                "winning_examples": winning_examples,
-                "weak_examples": weak_examples,
-                "winning_count": content_brain_context.get("winning_count"),
-                "weak_count": content_brain_context.get("weak_count"),
+                "winning_patterns": winning_patterns,
+                "weak_patterns": weak_patterns,
+                "winning_examples": winning_patterns,
+                "weak_examples": weak_patterns,
+                "winning_signals_count": content_brain_context.get("winning_signals_count") or content_brain_context.get("winning_count"),
+                "weak_signals_count": content_brain_context.get("weak_signals_count") or content_brain_context.get("weak_count"),
             }
-            content_brain_context_text = f" Local content-brain context: {json.dumps(context_blob, ensure_ascii=False, sort_keys=True)}."
+            content_brain_context_text = (
+                " Local content-brain learning context. "
+                "Use winning patterns as positive examples and weak patterns as anti-patterns. "
+                f"Context: {json.dumps(context_blob, ensure_ascii=False, sort_keys=True)}."
+            )
         return await self._generate_operation(
             operation="script",
             topic=topic,
@@ -419,6 +453,146 @@ class ScriptEngineService:
             provider_name=provider_name,
             record_cost_logs=record_cost_logs,
         )
+
+    def _normalize_content_brain_context(self, content_brain_context: dict[str, object] | None) -> dict[str, object] | None:
+        if not content_brain_context:
+            return None
+        winning_patterns = self._coerce_content_brain_patterns(content_brain_context, "winning_patterns", "winning_examples")
+        weak_patterns = self._coerce_content_brain_patterns(content_brain_context, "weak_patterns", "weak_examples")
+        winning_count = self._coerce_positive_int(
+            content_brain_context.get("winning_signals_count") or content_brain_context.get("winning_count")
+        )
+        weak_count = self._coerce_positive_int(
+            content_brain_context.get("weak_signals_count") or content_brain_context.get("weak_count")
+        )
+        if winning_count is None:
+            winning_count = len(winning_patterns)
+        if weak_count is None:
+            weak_count = len(weak_patterns)
+        if not winning_patterns and not weak_patterns and winning_count == 0 and weak_count == 0:
+            return None
+        return {
+            "channel_slug": content_brain_context.get("channel_slug"),
+            "topic": content_brain_context.get("topic"),
+            "winning_patterns": winning_patterns,
+            "weak_patterns": weak_patterns,
+            "winning_examples": winning_patterns,
+            "weak_examples": weak_patterns,
+            "winning_signals_count": winning_count,
+            "weak_signals_count": weak_count,
+        }
+
+    def _coerce_content_brain_patterns(
+        self,
+        content_brain_context: dict[str, object],
+        primary_key: str,
+        fallback_key: str,
+    ) -> list[dict[str, object]]:
+        raw_patterns = content_brain_context.get(primary_key) or content_brain_context.get(fallback_key)
+        if not isinstance(raw_patterns, list):
+            return []
+        patterns: list[dict[str, object]] = []
+        for entry in raw_patterns:
+            if isinstance(entry, dict):
+                pattern = {
+                    "video_id": entry.get("video_id"),
+                    "video_slug": entry.get("video_slug"),
+                    "channel_slug": entry.get("channel_slug"),
+                    "topic": entry.get("topic"),
+                    "notes": entry.get("notes"),
+                    "reason_tags": _coerce_string_list(entry.get("reason_tags")),
+                }
+                patterns.append(pattern)
+        return patterns
+
+    def _coerce_positive_int(self, value: object | None) -> int | None:
+        if isinstance(value, int) and value > 0:
+            return value
+        return None
+
+    def _apply_content_brain_context_to_script(
+        self,
+        *,
+        script_content: dict[str, object],
+        topic: str,
+        content_brain_context: dict[str, object],
+        default_call_to_action: str | None,
+        style_tone: str | None,
+        target_duration_seconds: int | None,
+    ) -> tuple[dict[str, object], list[str]]:
+        winning_patterns = content_brain_context.get("winning_patterns") or []
+        weak_patterns = content_brain_context.get("weak_patterns") or []
+        topic_text = topic.strip() or "o tema"
+        applied_reason_tags: list[str] = []
+        winning_tags = self._collect_reason_tags(winning_patterns)
+        weak_tags = self._collect_reason_tags(weak_patterns)
+        applied_reason_tags.extend(winning_tags[:3])
+        if weak_tags:
+            applied_reason_tags.extend([tag for tag in weak_tags if tag not in applied_reason_tags][:2])
+
+        normalized_winning_tags = {_normalize_reason_tag(tag) for tag in winning_tags}
+        normalized_weak_tags = {_normalize_reason_tag(tag) for tag in weak_tags}
+        has_curiosity = "curiosidade" in normalized_winning_tags
+        has_generic_weakness = any(tag in {"generico", "generic"} for tag in normalized_weak_tags)
+        has_short_hook = any(tag in {"hook", "abertura", "curto"} for tag in normalized_winning_tags)
+
+        if has_curiosity:
+            hook = f"Voce ja percebeu essa curiosidade sobre {topic_text}?"
+        elif has_short_hook:
+            hook = f"Esse detalhe sobre {topic_text} muda tudo em poucos segundos."
+        else:
+            hook = f"Voce ja viu {topic_text} por este angulo?"
+
+        if has_generic_weakness:
+            body_blocks = [
+                f"Abra com um exemplo concreto de {topic_text} para evitar uma introducao generica.",
+                f"Mostre um caso real que torne {topic_text} facil de imaginar.",
+                "Feche com uma acao objetiva em vez de uma explicacao longa e abstrata.",
+            ]
+        else:
+            body_blocks = [
+                f"Primeiro, simplifique {topic_text} em uma ideia central que a audiencia entenda sem esforco.",
+                "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
+                "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
+            ]
+        if winning_tags:
+            body_blocks[-1] = f"Feche reforcando o padrao vencedor de {', '.join(winning_tags[:2])} para manter o ritmo."
+
+        call_to_action = default_call_to_action or (
+            "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+        )
+        if any(tag == "cta" for tag in normalized_winning_tags):
+            call_to_action = "Se isso fez sentido, salva e manda para quem precisa ver esse atalho."
+
+        estimated_duration_seconds = target_duration_seconds if target_duration_seconds is not None else 24 + len(body_blocks) * 6
+        script_text = "\n\n".join([hook, *body_blocks, call_to_action])
+        updated_script = dict(script_content)
+        updated_script.update(
+            {
+                "hook": hook,
+                "body_blocks": body_blocks,
+                "call_to_action": call_to_action,
+                "estimated_duration_seconds": estimated_duration_seconds,
+                "style_tone": style_tone or str(updated_script.get("style_tone") or "didatico e direto"),
+                "script": script_text,
+                "beats": ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))], "cta"],
+                "content_brain_context_used": True,
+                "applied_reason_tags": applied_reason_tags,
+            }
+        )
+        return updated_script, applied_reason_tags
+
+    def _collect_reason_tags(self, patterns: object) -> list[str]:
+        if not isinstance(patterns, list):
+            return []
+        collected: list[str] = []
+        for entry in patterns:
+            if not isinstance(entry, dict):
+                continue
+            for tag in _coerce_string_list(entry.get("reason_tags")):
+                if tag not in collected:
+                    collected.append(tag)
+        return collected
 
     async def _policy_check(self, *, topic: str, script: LLMResult, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
         script_text = str(script.content.get("script") or "")

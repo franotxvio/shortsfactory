@@ -15,7 +15,7 @@ from app.api.deps import get_async_session, get_video_production_service
 from app.core.config import Settings
 from app.main import app
 from app.models.core import AssetPool, Channel, CostLog, Script, Video
-from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStatus, WorkflowStatus
+from app.models.enums import LifecycleStatus, LLMProvider, VideoExecutionMode, VideoStageStatus, WorkflowStatus
 from app.schemas.video_production import AssetListResponse
 from app.schemas.video_production import AssetResponse
 from app.schemas.video_production import VideoPerformanceListResponse
@@ -25,6 +25,7 @@ from app.schemas.video_production import VideoPipelineResponse
 from app.schemas.video_production import VideoProductionResponse
 from app.services.llm_types import LLMResult, LLMUsage
 from app.services.openai_client import OpenAIJSONClient
+from app.services.openai_client import LLMJSONClient
 from app.services.video_job_queue import VideoJobQueueService, get_video_job_queue_service
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
@@ -1050,15 +1051,179 @@ async def test_script_engine_receives_content_brain_context(
         content_brain_context={
             "channel_slug": "brain-channel",
             "topic": "python",
-            "winning_examples": [{"video_id": 1, "notes": "hook curto"}],
-            "weak_examples": [{"video_id": 2, "notes": "muito longo"}],
-            "winning_count": 1,
-            "weak_count": 1,
+            "winning_patterns": [{"video_id": 1, "notes": "hook curto", "reason_tags": ["curiosidade"]}],
+            "weak_patterns": [{"video_id": 2, "notes": "muito longo", "reason_tags": ["genérico"]}],
+            "winning_signals_count": 1,
+            "weak_signals_count": 1,
         },
     )
 
     assert result.script_status == "approved"
-    assert any("winning_examples" in user_prompt and "weak_examples" in user_prompt for _, user_prompt, _, _ in fake_llm.calls)
+    assert result.content_brain_context_used is True
+    assert result.winning_signals_count == 1
+    assert result.weak_signals_count == 1
+    assert "curiosidade" in (result.applied_reason_tags or [])
+    assert any("winning_patterns" in user_prompt and "weak_patterns" in user_prompt for _, user_prompt, _, _ in fake_llm.calls)
+
+
+@pytest.mark.asyncio
+async def test_script_engine_fake_uses_content_brain_winning_signals(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    settings = _build_content_brain_settings(tmp_path, database_url=temp_database_url)
+    service = ScriptEngineService(session=db_session, settings=settings)
+
+    result = await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="brain-channel",
+        channel_name="Brain Channel",
+        video_title="Script winning context",
+        execution_mode=VideoExecutionMode.FAKE,
+        content_brain_context={
+            "channel_slug": "brain-channel",
+            "topic": "python",
+            "winning_patterns": [
+                {"video_id": 1, "notes": "hook curto e curioso", "reason_tags": ["curiosidade", "hook"]},
+            ],
+            "weak_patterns": [
+                {"video_id": 2, "notes": "intro genérica demais", "reason_tags": ["genérico"]},
+            ],
+            "winning_signals_count": 1,
+            "weak_signals_count": 1,
+        },
+    )
+
+    assert result.content_brain_context_used is True
+    assert result.winning_signals_count == 1
+    assert result.weak_signals_count == 1
+    assert "curiosidade" in (result.applied_reason_tags or [])
+    assert "curiosidade" in (result.hook or "").lower()
+    assert any("padrao vencedor" in block.lower() for block in result.body_blocks or [])
+
+
+@pytest.mark.asyncio
+async def test_script_engine_fake_avoids_generic_weak_signals(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    settings = _build_content_brain_settings(tmp_path, database_url=temp_database_url)
+    service = ScriptEngineService(session=db_session, settings=settings)
+
+    result = await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="brain-channel",
+        channel_name="Brain Channel",
+        video_title="Script weak context",
+        execution_mode=VideoExecutionMode.FAKE,
+        content_brain_context={
+            "channel_slug": "brain-channel",
+            "topic": "python",
+            "winning_patterns": [],
+            "weak_patterns": [
+                {"video_id": 2, "notes": "intro muito genérica", "reason_tags": ["genérico"]},
+            ],
+            "winning_signals_count": 0,
+            "weak_signals_count": 1,
+        },
+    )
+
+    assert result.content_brain_context_used is True
+    assert result.winning_signals_count == 0
+    assert result.weak_signals_count == 1
+    assert "genérico" in (result.applied_reason_tags or [])
+    assert any("exemplo concreto" in block.lower() for block in result.body_blocks or [])
+    assert any("generica" in block.lower() or "genérica" in block.lower() for block in result.body_blocks or [])
+
+
+@pytest.mark.asyncio
+async def test_script_engine_real_prompt_receives_content_brain_context(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    prompts: list[str] = []
+
+    async def _fake_generate_json(self, *, payload, model: str) -> LLMResult:  # noqa: ANN001
+        prompts.append(payload.user_prompt)
+        lower_prompt = payload.system_prompt.lower()
+        if "idea" in lower_prompt:
+            content = {
+                "idea": "Explique uma curiosidade simples em formato curto.",
+                "angle": "curiosidade",
+                "title": "Ideia curta",
+            }
+        elif "hook" in lower_prompt:
+            content = {
+                "hook": "Voce ja percebeu isso em menos de 10 segundos?",
+                "alt_hook": "Isso vai mudar sua forma de ver o tema.",
+            }
+        elif "script" in lower_prompt:
+            hook = "Voce ja viu esse tema por este angulo?"
+            body_blocks = [
+                "Primeiro, simplifique a ideia central para ganhar atencao rapido.",
+                "Depois, mostre um exemplo curto para deixar o assunto pratico.",
+                "Em seguida, destaque o ganho direto para manter o ritmo.",
+            ]
+            call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem."
+            content = {
+                "title": "Roteiro enxuto",
+                "hook": hook,
+                "body_blocks": body_blocks,
+                "call_to_action": call_to_action,
+                "estimated_duration_seconds": 36,
+                "style_tone": "didatico e direto",
+                "script": "\n\n".join([hook, *body_blocks, call_to_action]),
+                "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
+            }
+        else:
+            content = {
+                "risk_score": 0.23,
+                "decision": "approved",
+                "reasons": ["Tema seguro", "Sem sinais de risco"],
+                "allowed_topics": ["educacao"],
+            }
+
+        return LLMResult(
+            content=content,
+            model=model,
+            request_id="req_test",
+            usage=LLMUsage(prompt_tokens=10, completion_tokens=20),
+            raw_content=json.dumps(content),
+        )
+
+    monkeypatch.setattr(LLMJSONClient, "generate_json", _fake_generate_json)
+    settings = _build_content_brain_settings(tmp_path, database_url=temp_database_url)
+    settings.llm_provider = LLMProvider.OPENAI
+    settings.llm_api_key = "test-key"
+    service = ScriptEngineService(session=db_session, settings=settings)
+
+    result = await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="brain-channel",
+        channel_name="Brain Channel",
+        video_title="Script real context test",
+        execution_mode=VideoExecutionMode.REAL,
+        content_brain_context={
+            "channel_slug": "brain-channel",
+            "topic": "python",
+            "winning_patterns": [
+                {"video_id": 1, "notes": "hook curto e curioso", "reason_tags": ["curiosidade"]},
+            ],
+            "weak_patterns": [
+                {"video_id": 2, "notes": "intro muito genérica", "reason_tags": ["genérico"]},
+            ],
+            "winning_signals_count": 1,
+            "weak_signals_count": 1,
+        },
+    )
+
+    assert result.content_brain_context_used is True
+    assert any("winning_patterns" in user_prompt and "weak_patterns" in user_prompt for user_prompt in prompts)
+    assert any("Use winning patterns as positive examples" in user_prompt for user_prompt in prompts)
 
 
 @pytest.mark.asyncio
