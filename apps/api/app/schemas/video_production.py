@@ -14,10 +14,19 @@ class VideoProductionRequest(BaseModel):
     visual_template: str = Field(default="default", max_length=64)
 
 
+class YouTubePublishPrepRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+    description: str | None = Field(default=None, max_length=10_000)
+    tags: list[str] | None = None
+    visibility: str = Field(default="private", max_length=32)
+    made_for_kids: bool = Field(default=False)
+
+
 class VideoProductionResponse(BaseModel):
     video_id: int
     channel_slug: str | None = None
     target_duration_seconds: int | None = None
+    video_title: str | None = None
     audio_path: str
     caption_path: str
     preview_path: str
@@ -51,6 +60,12 @@ class VideoProductionResponse(BaseModel):
     export_final_path: str | None = None
     export_preview_path: str | None = None
     export_caption_path: str | None = None
+    youtube_publish_path: str | None = None
+    youtube_publish_title: str | None = None
+    youtube_publish_description: str | None = None
+    youtube_publish_tags: list[str] | None = None
+    youtube_publish_visibility: str | None = None
+    youtube_publish_made_for_kids: bool | None = None
 
 
 class VideoCreateRequest(BaseModel):
@@ -127,6 +142,7 @@ class VideoPipelineResponse(BaseModel):
     video_slug: str | None = None
     channel_slug: str | None = None
     target_duration_seconds: int | None = None
+    video_title: str | None = None
     status: str
     stage_status: str
     script_id: int | None = None
@@ -164,6 +180,12 @@ class VideoPipelineResponse(BaseModel):
     export_final_path: str | None = None
     export_preview_path: str | None = None
     export_caption_path: str | None = None
+    youtube_publish_path: str | None = None
+    youtube_publish_title: str | None = None
+    youtube_publish_description: str | None = None
+    youtube_publish_tags: list[str] | None = None
+    youtube_publish_visibility: str | None = None
+    youtube_publish_made_for_kids: bool | None = None
 
 
 class ChannelPresetUpsertRequest(BaseModel):

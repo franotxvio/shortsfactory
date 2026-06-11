@@ -32,6 +32,7 @@ type VideoItem = {
   style_tone?: string | null;
   visual_template?: string | null;
   target_duration_seconds?: number | null;
+  video_title?: string | null;
   content_brain_context_used?: boolean;
   winning_signals_count?: number;
   weak_signals_count?: number;
@@ -41,6 +42,12 @@ type VideoItem = {
   export_final_path?: string | null;
   export_preview_path?: string | null;
   export_caption_path?: string | null;
+  youtube_publish_path?: string | null;
+  youtube_publish_title?: string | null;
+  youtube_publish_description?: string | null;
+  youtube_publish_tags?: string[] | null;
+  youtube_publish_visibility?: string | null;
+  youtube_publish_made_for_kids?: boolean | null;
   performance_label?: string | null;
   performance_notes?: string | null;
   performance_reason_tags?: string[] | null;
@@ -206,6 +213,7 @@ function FileLinks({
     { label: "Final export", path: video.export_final_path },
     { label: "Captions export", path: video.export_caption_path },
     { label: "Preview export", path: video.export_preview_path },
+    { label: "YouTube prep", path: video.youtube_publish_path },
   ].filter((item) => Boolean(item.path));
 
   if (links.length === 0) {
@@ -246,6 +254,10 @@ export default function DashboardPage() {
   const channelSlugRef = useRef(DEFAULT_FORM.channelSlug);
   const [scriptDraft, setScriptDraft] = useState("");
   const [selectedVisualTemplate, setSelectedVisualTemplate] = useState(DEFAULT_VISUAL_TEMPLATE);
+  const [youtubeTitle, setYoutubeTitle] = useState("");
+  const [youtubeDescription, setYoutubeDescription] = useState("");
+  const [youtubeTagsText, setYoutubeTagsText] = useState("");
+  const [youtubeVisibility, setYoutubeVisibility] = useState("private");
   const [pendingAssetId, setPendingAssetId] = useState<number | null>(null);
   const [presetChannelName, setPresetChannelName] = useState("");
   const [presetDefaultTopicStyle, setPresetDefaultTopicStyle] = useState("");
@@ -308,6 +320,7 @@ export default function DashboardPage() {
   const pipelineCompleted =
     selectedVideo?.stage_status === "final_rendered" || selectedVideo?.status === "completed";
   const exportPackageReady = Boolean(selectedVideo && selectedVideo.stage_status === "final_rendered");
+  const youtubePrepReady = Boolean(selectedVideo && selectedVideo.stage_status === "final_rendered");
   const previewNeedsRefresh = Boolean(
     selectedVideo &&
       selectedVideo.preview_path &&
@@ -334,10 +347,58 @@ export default function DashboardPage() {
     return video.performance_reason_tags.join(", ");
   }
 
+  function buildYoutubePrepDraft(video: VideoItem | null) {
+    if (!video) {
+      return {
+        title: "",
+        description: "",
+        tagsText: "",
+        visibility: "private",
+      };
+    }
+
+    const title = video.youtube_publish_title ?? video.video_title ?? video.video_slug ?? "Video Shorts";
+    const description =
+      video.youtube_publish_description ??
+      [video.hook, ...(video.body_blocks ?? []), video.call_to_action, video.style_tone ? `Tom: ${video.style_tone}` : null]
+        .filter(Boolean)
+        .join("\n\n");
+    const tags =
+      video.youtube_publish_tags?.length
+        ? video.youtube_publish_tags
+        : [
+            video.channel_slug,
+            video.asset_channel_slug,
+            video.asset_slug,
+            ...(video.asset_tags ?? []),
+            ...(video.performance_reason_tags ?? []),
+            ...(video.applied_reason_tags ?? []),
+          ]
+            .filter(Boolean)
+            .map((item) => String(item).trim())
+            .filter(Boolean);
+    const uniqueTags = Array.from(new Set(tags));
+
+    return {
+      title,
+      description,
+      tagsText: uniqueTags.join(", "),
+      visibility: video.youtube_publish_visibility ?? "private",
+    };
+  }
+
   const syncPerformanceForm = useCallback((video: VideoItem | null) => {
     setPerformanceLabel(video?.performance_label ?? "unknown");
     setPerformanceNotes(video?.performance_notes ?? "");
     setPerformanceReasonTagsText(buildPerformanceReasonTagsText(video));
+  }, []);
+
+  const syncYoutubePrepForm = useCallback((video: VideoItem | null) => {
+    const draft = buildYoutubePrepDraft(video);
+    setYoutubeTitle(draft.title);
+    setYoutubeDescription(draft.description);
+    setYoutubeTagsText(draft.tagsText);
+    setYoutubeVisibility(draft.visibility);
   }, []);
 
   function canRunStep(video: VideoItem | null, stage: string) {
@@ -509,6 +570,7 @@ export default function DashboardPage() {
       const nextSelectedVideo = items.find((item) => item.video_id === nextSelectedId) ?? null;
       setScriptDraft(buildScriptDraft(nextSelectedVideo));
       syncPerformanceForm(nextSelectedVideo);
+      syncYoutubePrepForm(nextSelectedVideo);
       setSelectedVisualTemplate(nextSelectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
       setPendingAssetId(null);
       setLatestJob(null);
@@ -524,7 +586,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadContentBrainSignals, loadLatestJob, syncPerformanceForm]);
+  }, [loadContentBrainSignals, loadLatestJob, syncPerformanceForm, syncYoutubePrepForm]);
 
   const loadAssets = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
@@ -576,6 +638,7 @@ export default function DashboardPage() {
     selectedVideoIdRef.current = nextVideo.video_id;
     setScriptDraft(buildScriptDraft(nextVideo));
     syncPerformanceForm(nextVideo);
+    syncYoutubePrepForm(nextVideo);
     setSelectedVisualTemplate(nextVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
     setLatestJob(null);
@@ -587,6 +650,7 @@ export default function DashboardPage() {
     selectedVideoIdRef.current = video.video_id;
     setScriptDraft(buildScriptDraft(video));
     syncPerformanceForm(video);
+    syncYoutubePrepForm(video);
     setSelectedVisualTemplate(video.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
     setLatestJob(null);
@@ -1145,6 +1209,39 @@ export default function DashboardPage() {
     }
   }
 
+  async function saveYouTubePrep() {
+    if (selectedVideoId === null || selectedVideo === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de salvar o YouTube Prep." });
+      return;
+    }
+    if (!youtubePrepReady) {
+      setMessage({ kind: "error", text: "YouTube Prep so pode ser salvo depois do render final." });
+      return;
+    }
+
+    setBusyAction("youtube-prep");
+    try {
+      const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/youtube-prep`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: youtubeTitle,
+          description: youtubeDescription,
+          tags: parseTagsInput(youtubeTagsText),
+          visibility: youtubeVisibility,
+          made_for_kids: false,
+        }),
+      });
+      mergeVideo(updated);
+      syncYoutubePrepForm(updated);
+      setMessage({ kind: "success", text: `YouTube Prep salvo para o video ${selectedVideoId}.` });
+      void loadVideos({ quiet: true });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao salvar o YouTube Prep." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadVideos();
@@ -1420,6 +1517,11 @@ export default function DashboardPage() {
               {selectedVideo.channel_slug ? (
                 <p>
                   <strong>Canal:</strong> {selectedVideo.channel_slug}
+                </p>
+              ) : null}
+              {selectedVideo.video_title ? (
+                <p>
+                  <strong>Titulo sugerido:</strong> {selectedVideo.video_title}
                 </p>
               ) : null}
               <p>
@@ -1723,6 +1825,53 @@ export default function DashboardPage() {
               ) : null}
             </div>
 
+            <div className="asset-form">
+              <div className="panel-header">
+                <h3>YouTube Prep</h3>
+                <span className="panel-hint">{youtubePrepReady ? "pronto para salvar" : "aguardando final render"}</span>
+              </div>
+              <div className="asset-form-grid">
+                <label className="field asset-form-tags">
+                  <span>Title</span>
+                  <input value={youtubeTitle} onChange={(event) => setYoutubeTitle(event.target.value)} disabled={!youtubePrepReady || busyAction !== null} />
+                </label>
+                <label className="field">
+                  <span>Visibility</span>
+                  <select value={youtubeVisibility} onChange={(event) => setYoutubeVisibility(event.target.value)} disabled={!youtubePrepReady || busyAction !== null}>
+                    <option value="private">private</option>
+                    <option value="unlisted">unlisted</option>
+                    <option value="public">public</option>
+                  </select>
+                </label>
+                <label className="field asset-form-tags">
+                  <span>Description</span>
+                  <textarea
+                    value={youtubeDescription}
+                    onChange={(event) => setYoutubeDescription(event.target.value)}
+                    disabled={!youtubePrepReady || busyAction !== null}
+                    rows={8}
+                  />
+                </label>
+                <label className="field asset-form-tags">
+                  <span>Tags</span>
+                  <input value={youtubeTagsText} onChange={(event) => setYoutubeTagsText(event.target.value)} disabled={!youtubePrepReady || busyAction !== null} />
+                </label>
+              </div>
+              <div className="asset-form-actions">
+                <span className="panel-hint">made_for_kids: false por padrao</span>
+                <button type="button" className="primary secondary" onClick={() => void saveYouTubePrep()} disabled={!youtubePrepReady || busyAction !== null}>
+                  {busyAction === "youtube-prep" ? "Salvando..." : "Salvar YouTube Prep"}
+                </button>
+              </div>
+              {selectedVideo.youtube_publish_path ? (
+                <p className="helper">
+                  JSON salvo em <code>{selectedVideo.youtube_publish_path}</code>.
+                </p>
+              ) : (
+                <p className="helper">Salve o JSON local depois do render final para preparar a publicacao manualmente.</p>
+              )}
+            </div>
+
             <div className="panel asset-panel">
               <div className="panel-header">
                 <h3>Assets locais</h3>
@@ -1903,6 +2052,7 @@ export default function DashboardPage() {
               <PathLine label="export_final_path" value={selectedVideo.export_final_path} />
               <PathLine label="export_caption_path" value={selectedVideo.export_caption_path} />
               <PathLine label="export_preview_path" value={selectedVideo.export_preview_path} />
+              <PathLine label="youtube_publish_path" value={selectedVideo.youtube_publish_path} />
             </div>
           </div>
         ) : (

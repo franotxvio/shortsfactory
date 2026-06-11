@@ -30,6 +30,7 @@ from app.schemas.video_production import (
     VideoScriptUpdateRequest,
     VideoProductionRequest,
     VideoProductionResponse,
+    YouTubePublishPrepRequest,
     VideoStepRequest,
 )
 from app.services.video_production import VideoProductionService
@@ -634,6 +635,29 @@ async def create_export_package(
 ) -> VideoPipelineResponse:
     try:
         result = await service.create_export_package(video_id=video_id)
+        await _commit_if_available(service)
+    except ValueError as error:
+        await _rollback_if_available(service)
+        _raise_http_error(error)
+    response = VideoPipelineResponse.model_validate(asdict(result))
+    return await _with_demo_flag(service, response)
+
+
+@router.post("/{video_id}/youtube-prep", response_model=VideoPipelineResponse)
+async def create_youtube_publish_prep(
+    video_id: int,
+    payload: YouTubePublishPrepRequest | None = Body(default=None),
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> VideoPipelineResponse:
+    try:
+        result = await service.create_youtube_publish_prep(
+            video_id=video_id,
+            title=payload.title if payload is not None else None,
+            description=payload.description if payload is not None else None,
+            tags=payload.tags if payload is not None else None,
+            visibility=payload.visibility if payload is not None else "private",
+            made_for_kids=payload.made_for_kids if payload is not None else False,
+        )
         await _commit_if_available(service)
     except ValueError as error:
         await _rollback_if_available(service)

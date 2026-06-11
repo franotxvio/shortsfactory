@@ -735,6 +735,137 @@ async def test_internal_video_export_package_blocks_without_final_render(
 
 
 @pytest.mark.asyncio
+async def test_internal_video_youtube_prep_creates_json_and_metadata(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    await _create_approved_script(db_session)
+    audio_bytes = _build_mp3_bytes(tmp_path)
+    fake_tts_client = FakeTTSClient(audio_bytes=audio_bytes)
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+    tts_worker = TTSWorker(session=db_session, client=fake_tts_client, settings=settings)
+    production_service = VideoProductionService(session=db_session, settings=settings, tts_worker=tts_worker)
+
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        worker = TTSWorker(session=session, client=fake_tts_client, settings=settings)
+        return VideoProductionService(session=session, settings=settings, tts_worker=worker)
+
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+
+    result = await production_service.produce_full_video(video_id=video.id)
+    assert Path(result.final_path).exists()
+    await db_session.commit()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    original_get_settings = internal_videos_routes.get_settings
+    internal_videos_routes.get_settings = lambda: settings
+    try:
+        with TestClient(app) as client:
+            prep_response = client.post(
+                f"/internal/videos/{video.id}/youtube-prep",
+                json={
+                    "title": "Titulo sugerido manual",
+                    "description": "Descricao sugerida manual",
+                    "tags": ["shorts", "python", "manual"],
+                    "visibility": "private",
+                    "made_for_kids": False,
+                },
+            )
+            assert prep_response.status_code == 200, prep_response.text
+            prepared = VideoPipelineResponse.model_validate(prep_response.json())
+            assert prepared.youtube_publish_path is not None
+            assert prepared.youtube_publish_title == "Titulo sugerido manual"
+            assert prepared.youtube_publish_description == "Descricao sugerida manual"
+            assert prepared.youtube_publish_tags == ["shorts", "python", "manual"]
+            assert prepared.youtube_publish_visibility == "private"
+            assert prepared.youtube_publish_made_for_kids is False
+
+            json_response = client.get("/internal/videos/files", params={"path": prepared.youtube_publish_path})
+            assert json_response.status_code == 200, json_response.text
+            assert json_response.headers["content-type"].startswith("application/json")
+            assert json_response.headers["content-disposition"].lower().startswith("inline")
+            payload = json.loads(json_response.text)
+    finally:
+        internal_videos_routes.get_settings = original_get_settings
+        app.dependency_overrides.clear()
+
+    publish_root = tmp_path / "storage" / "exports" / video.slug
+    assert (publish_root / "youtube_publish.json").exists()
+    assert payload["video_id"] == video.id
+    assert payload["slug"] == video.slug
+    assert payload["title"] == "Titulo sugerido manual"
+    assert payload["description"] == "Descricao sugerida manual"
+    assert payload["tags"] == ["shorts", "python", "manual"]
+    assert payload["visibility"] == "private"
+    assert payload["made_for_kids"] is False
+    assert payload["final_mp4_path"] == prepared.export_final_path
+    assert payload["captions_path"] == prepared.export_caption_path
+    assert payload["metadata_path"] == prepared.export_metadata_path
+
+
+@pytest.mark.asyncio
+async def test_internal_video_youtube_prep_blocks_without_final_render(
+    temp_database_url: str,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            prep_response = client.post(
+                f"/internal/videos/{created.video_id}/youtube-prep",
+                json={"title": "Titulo manual"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert prep_response.status_code == 400
+    assert "final render" in prep_response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_internal_video_preview_rejects_unknown_template(
     db_session,
     temp_database_url: str,

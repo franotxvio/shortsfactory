@@ -50,6 +50,7 @@ class VideoProductionResult:
     final_path: str
     asset_path: str
     channel_slug: str | None = None
+    video_title: str | None = None
     asset_name: str | None = None
     asset_slug: str | None = None
     asset_type: str | None = None
@@ -75,6 +76,12 @@ class VideoProductionResult:
     export_final_path: str | None = None
     export_preview_path: str | None = None
     export_caption_path: str | None = None
+    youtube_publish_path: str | None = None
+    youtube_publish_title: str | None = None
+    youtube_publish_description: str | None = None
+    youtube_publish_tags: list[str] | None = None
+    youtube_publish_visibility: str | None = None
+    youtube_publish_made_for_kids: bool | None = None
 
 
 @dataclass(slots=True)
@@ -84,6 +91,7 @@ class VideoPipelineState:
     channel_slug: str | None
     status: str
     stage_status: str
+    video_title: str | None = None
     script_id: int | None = None
     script_status: str | None = None
     asset_id: int | None = None
@@ -119,6 +127,12 @@ class VideoPipelineState:
     export_final_path: str | None = None
     export_preview_path: str | None = None
     export_caption_path: str | None = None
+    youtube_publish_path: str | None = None
+    youtube_publish_title: str | None = None
+    youtube_publish_description: str | None = None
+    youtube_publish_tags: list[str] | None = None
+    youtube_publish_visibility: str | None = None
+    youtube_publish_made_for_kids: bool | None = None
 
 
 class _DeterministicTTSClient:
@@ -179,6 +193,7 @@ class VideoProductionService:
         return VideoProductionResult(
             video_id=video_id,
             channel_slug=final_state.channel_slug,
+            video_title=final_state.video_title,
             audio_path=tts_result.audio_path,
             caption_path=caption_result.caption_path,
             preview_path=preview_result.output_path,
@@ -200,6 +215,12 @@ class VideoProductionService:
             winning_signals_count=final_state.winning_signals_count,
             weak_signals_count=final_state.weak_signals_count,
             applied_reason_tags=final_state.applied_reason_tags,
+            youtube_publish_path=final_state.youtube_publish_path,
+            youtube_publish_title=final_state.youtube_publish_title,
+            youtube_publish_description=final_state.youtube_publish_description,
+            youtube_publish_tags=final_state.youtube_publish_tags,
+            youtube_publish_visibility=final_state.youtube_publish_visibility,
+            youtube_publish_made_for_kids=final_state.youtube_publish_made_for_kids,
         )
 
     async def list_recent_videos(self, *, limit: int = 20) -> list[VideoPipelineState]:
@@ -640,6 +661,52 @@ class VideoProductionService:
         await self.session.flush()
         return await self.get_status(video_id=video_id)
 
+    async def create_youtube_publish_prep(
+        self,
+        *,
+        video_id: int,
+        title: str | None = None,
+        description: str | None = None,
+        tags: list[str] | None = None,
+        visibility: str = "private",
+        made_for_kids: bool = False,
+    ) -> VideoPipelineState:
+        statement = (
+            select(Video)
+            .options(selectinload(Video.asset), selectinload(Video.channel), selectinload(Video.scripts))
+            .where(Video.id == video_id)
+        )
+        video = await self.session.scalar(statement)
+        if video is None:
+            raise ValueError(f"Video {video_id} not found")
+        if video.stage_status != VideoStageStatus.FINAL_RENDERED:
+            raise ValueError("YouTube prep is only available after final render")
+        if not video.final_path:
+            raise ValueError("Final render is required before creating YouTube prep")
+
+        export_state = await self.get_status(video_id=video_id)
+        if not export_state.export_metadata_path or not export_state.export_final_path or not export_state.export_caption_path:
+            await self.create_export_package(video_id=video_id)
+            export_state = await self.get_status(video_id=video_id)
+
+        youtube_publish_path = self._youtube_publish_path(video.slug)
+        youtube_publish_payload = self._build_youtube_publish_payload(
+            video=video,
+            state=export_state,
+            title=title,
+            description=description,
+            tags=tags,
+            visibility=visibility,
+            made_for_kids=made_for_kids,
+        )
+        youtube_publish_path.parent.mkdir(parents=True, exist_ok=True)
+        youtube_publish_path.write_text(
+            json.dumps(youtube_publish_payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        await self.session.flush()
+        return await self.get_status(video_id=video_id)
+
     async def get_status(self, *, video_id: int) -> VideoPipelineState:
         statement = select(Video).options(selectinload(Video.asset), selectinload(Video.channel)).where(Video.id == video_id)
         video = await self.session.scalar(statement)
@@ -920,12 +987,13 @@ class VideoProductionService:
         resolved_visual_template = visual_template or self.render_worker.get_visual_template(video.id)
         performance_record = self.content_brain_service.describe_video_performance(video_id=video.id)
         export_paths = self._describe_export_package(video.slug)
-        return VideoPipelineState(
+        state = VideoPipelineState(
             video_id=video.id,
             video_slug=video.slug,
             channel_slug=channel_slug,
             status=video.status.value,
             stage_status=video.stage_status.value,
+            video_title=video.title,
             script_id=script_id,
             script_status=script_status,
             asset_id=video.asset_id,
@@ -962,11 +1030,20 @@ class VideoProductionService:
             export_preview_path=export_preview_path if export_preview_path is not None else export_paths["export_preview_path"],
             export_caption_path=export_caption_path if export_caption_path is not None else export_paths["export_caption_path"],
         )
+        youtube_paths = self._describe_youtube_publish_package(video, state)
+        state.youtube_publish_path = youtube_paths["youtube_publish_path"]
+        state.youtube_publish_title = youtube_paths["youtube_publish_title"]
+        state.youtube_publish_description = youtube_paths["youtube_publish_description"]
+        state.youtube_publish_tags = youtube_paths["youtube_publish_tags"]
+        state.youtube_publish_visibility = youtube_paths["youtube_publish_visibility"]
+        state.youtube_publish_made_for_kids = youtube_paths["youtube_publish_made_for_kids"]
+        return state
 
     def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
         return VideoProductionResult(
             video_id=state.video_id,
             channel_slug=state.channel_slug,
+            video_title=state.video_title,
             audio_path=state.audio_path or "",
             caption_path=state.caption_path or "",
             preview_path=state.preview_path or "",
@@ -997,6 +1074,12 @@ class VideoProductionService:
             export_final_path=state.export_final_path,
             export_preview_path=state.export_preview_path,
             export_caption_path=state.export_caption_path,
+            youtube_publish_path=state.youtube_publish_path,
+            youtube_publish_title=state.youtube_publish_title,
+            youtube_publish_description=state.youtube_publish_description,
+            youtube_publish_tags=state.youtube_publish_tags,
+            youtube_publish_visibility=state.youtube_publish_visibility,
+            youtube_publish_made_for_kids=state.youtube_publish_made_for_kids,
         )
 
     def _build_fake_script(self, *, topic: str) -> str:
@@ -1273,6 +1356,125 @@ class VideoProductionService:
             "export_caption_path": self._absolute_to_storage_path(caption_path) if caption_path.exists() else None,
         }
 
+    def _youtube_publish_path(self, video_slug: str) -> Path:
+        return self._export_package_dir(video_slug) / "youtube_publish.json"
+
+    def _describe_youtube_publish_package(
+        self,
+        video: Video,
+        state: VideoPipelineState,
+    ) -> dict[str, str | list[str] | bool | None]:
+        publish_path = self._youtube_publish_path(video.slug)
+        publish_path_value = self._absolute_to_storage_path(publish_path)
+        if publish_path.exists():
+            try:
+                payload = json.loads(publish_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                return {
+                    "youtube_publish_path": publish_path_value,
+                    "youtube_publish_title": self._normalize_optional_text(payload.get("title")),
+                    "youtube_publish_description": self._normalize_optional_text(payload.get("description")),
+                    "youtube_publish_tags": self._coerce_string_list(payload.get("tags")),
+                    "youtube_publish_visibility": self._normalize_youtube_visibility(payload.get("visibility")),
+                    "youtube_publish_made_for_kids": bool(payload.get("made_for_kids", False)),
+                }
+            return {
+                "youtube_publish_path": publish_path_value,
+                "youtube_publish_title": None,
+                "youtube_publish_description": None,
+                "youtube_publish_tags": None,
+                "youtube_publish_visibility": None,
+                "youtube_publish_made_for_kids": None,
+            }
+
+        if state.stage_status != VideoStageStatus.FINAL_RENDERED.value:
+            return {
+                "youtube_publish_path": None,
+                "youtube_publish_title": None,
+                "youtube_publish_description": None,
+                "youtube_publish_tags": None,
+                "youtube_publish_visibility": None,
+                "youtube_publish_made_for_kids": None,
+            }
+
+        defaults = self._build_youtube_publish_defaults(video=video, state=state)
+        return {
+            "youtube_publish_path": None,
+            "youtube_publish_title": defaults["title"],
+            "youtube_publish_description": defaults["description"],
+            "youtube_publish_tags": defaults["tags"],
+            "youtube_publish_visibility": defaults["visibility"],
+            "youtube_publish_made_for_kids": defaults["made_for_kids"],
+        }
+
+    def _build_youtube_publish_payload(
+        self,
+        *,
+        video: Video,
+        state: VideoPipelineState,
+        title: str | None,
+        description: str | None,
+        tags: list[str] | None,
+        visibility: str,
+        made_for_kids: bool,
+    ) -> dict[str, object]:
+        defaults = self._build_youtube_publish_defaults(video=video, state=state)
+        normalized_title = self._normalize_optional_text(title) or str(defaults["title"])
+        normalized_description = self._normalize_optional_text(description) or str(defaults["description"])
+        normalized_tags = self._coerce_string_list(tags) or list(defaults["tags"])
+        normalized_visibility = self._normalize_youtube_visibility(visibility)
+        return {
+            "video_id": state.video_id,
+            "slug": video.slug,
+            "channel_slug": state.channel_slug,
+            "title": normalized_title,
+            "description": normalized_description,
+            "tags": normalized_tags,
+            "visibility": normalized_visibility,
+            "made_for_kids": bool(made_for_kids),
+            "final_mp4_path": state.export_final_path or state.final_path,
+            "captions_path": state.export_caption_path or state.caption_path,
+            "metadata_path": state.export_metadata_path,
+        }
+
+    def _build_youtube_publish_defaults(self, *, video: Video, state: VideoPipelineState) -> dict[str, object]:
+        title = video.title.strip() if isinstance(video.title, str) and video.title.strip() else video.slug
+        description_parts: list[str] = []
+        if state.hook:
+            description_parts.append(state.hook.strip())
+        if state.body_blocks:
+            description_parts.extend([block.strip() for block in state.body_blocks if block and block.strip()])
+        if state.call_to_action:
+            description_parts.append(f"CTA: {state.call_to_action.strip()}")
+        if state.style_tone:
+            description_parts.append(f"Tom: {state.style_tone.strip()}")
+        description_parts.append("#shorts")
+        tags: list[str] = []
+        for tag in [
+            state.channel_slug,
+            video.channel.slug if video.channel is not None else None,
+            state.asset_slug,
+            state.asset_type,
+            *list(state.asset_tags or []),
+            *list(state.performance_reason_tags or []),
+            *list(state.applied_reason_tags or []),
+            state.style_tone,
+        ]:
+            normalized_tag = self._normalize_optional_text(tag)
+            if normalized_tag and normalized_tag not in tags:
+                tags.append(normalized_tag)
+        if not tags:
+            tags = ["shorts", "video"]
+        return {
+            "title": title,
+            "description": "\n\n".join(description_parts).strip(),
+            "tags": tags,
+            "visibility": "private",
+            "made_for_kids": False,
+        }
+
     def _build_export_metadata(
         self,
         *,
@@ -1289,6 +1491,7 @@ class VideoProductionService:
             "video_id": state.video_id,
             "slug": video.slug,
             "title": video.title,
+            "video_title": state.video_title,
             "channel_slug": state.channel_slug,
             "script": {
                 "script_id": state.script_id,
@@ -1431,6 +1634,12 @@ class VideoProductionService:
         if duration <= 0:
             raise ValueError("target_duration_seconds must be a positive integer")
         return duration
+
+    def _normalize_youtube_visibility(self, value: object | None) -> str:
+        visibility = str(value or "private").strip().lower()
+        if visibility not in {"private", "unlisted", "public"}:
+            raise ValueError("Unknown visibility. Allowed values: private, unlisted, public")
+        return visibility
 
     def _normalize_visual_template(self, value: str) -> str:
         template = value.strip().lower()
