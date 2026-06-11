@@ -149,7 +149,13 @@ class VideoProductionService:
         video = await self.session.scalar(statement)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
-        return self._build_state(video, asset_path=video.asset.source_path if video.asset and video.asset.source_path else None)
+        script_id, script_status = await self._get_latest_script_metadata(video_id=video_id)
+        return self._build_state(
+            video,
+            script_id=script_id,
+            script_status=script_status,
+            asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+        )
 
     async def _create_fake_test_video(
         self,
@@ -276,6 +282,13 @@ class VideoProductionService:
             f"Comece com uma curiosidade simples sobre {topic}. "
             "Depois explique em tres pontos curtos e termine com uma chamada direta para a audiencia."
         )
+
+    async def _get_latest_script_metadata(self, *, video_id: int) -> tuple[int | None, str | None]:
+        statement = select(Script).where(Script.video_id == video_id).order_by(Script.version.desc())
+        script = await self.session.scalar(statement)
+        if script is None:
+            return None, None
+        return script.id, script.status.value
 
     def _slugify(self, value: str) -> str:
         import re

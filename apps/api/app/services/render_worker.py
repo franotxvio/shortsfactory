@@ -80,11 +80,17 @@ class RenderWorker:
         ensure_parent_dir(output_path)
         asset_path = Path(video.asset.source_path)
         caption_path = Path(video.caption_path)
+        safe_margin_x = max(64, width // 12)
+        safe_margin_y = max(120, height // 8)
+        subtitle_font_size = 28 if width <= 720 else 34
+        subtitle_margin_v = max(120, height // 9)
         filter_graph = (
-            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},format=yuv420p,"
+            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+            f"format=yuv420p,"
             f"subtitles='{escape_ffmpeg_path(caption_path)}':"
-            "force_style='FontName=Arial,FontSize=34,Alignment=2,Outline=2,Shadow=0,MarginV=180'"
+            f"force_style='FontName=Arial,FontSize={subtitle_font_size},Alignment=2,Outline=2,Shadow=0,"
+            f"MarginV={subtitle_margin_v},MarginL={safe_margin_x},MarginR={safe_margin_x}'"
             "[v]"
         )
         command = [
