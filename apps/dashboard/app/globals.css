@@ -36,7 +36,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -70,6 +71,20 @@ input {
   color: var(--text);
   border-radius: 12px;
   padding: 12px 14px;
+}
+
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: rgba(2, 6, 23, 0.45);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+select:focus {
+  outline: 2px solid rgba(103, 232, 249, 0.28);
+  border-color: rgba(103, 232, 249, 0.58);
 }
 
 input:focus {
@@ -421,6 +436,15 @@ textarea:focus {
 
 .stage-step-grid button {
   width: 100%;
+}
+
+.template-picker {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(2, 6, 23, 0.18);
 }
 
 .asset-panel {

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.api.deps import get_async_session, get_video_production_service
 from app.core.config import Settings
 from app.main import app
-from app.models.core import AssetPool, CostLog, Script, Video
+from app.models.core import AssetPool, Channel, CostLog, Script, Video
 from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStatus, WorkflowStatus
 from app.schemas.video_production import AssetListResponse
 from app.schemas.video_production import AssetResponse
@@ -27,6 +27,7 @@ from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
 from app.services.video_production import VideoProductionResult, VideoProductionService
 import app.api.routes.internal_videos as internal_videos_routes
+import app.services.render_worker as render_worker_module
 
 
 @dataclass
@@ -93,7 +94,13 @@ class FakeTTSClient:
 
 @dataclass
 class FakeVideoProductionService:
-    async def produce_full_video(self, *, video_id: int, auto_approve_preview: bool = True) -> VideoProductionResult:
+    async def produce_full_video(
+        self,
+        *,
+        video_id: int,
+        auto_approve_preview: bool = True,
+        visual_template: str | None = None,
+    ) -> VideoProductionResult:
         return VideoProductionResult(
             video_id=video_id,
             audio_path="storage/audio/fake.mp3",
@@ -137,6 +144,35 @@ async def _create_approved_script(db_session) -> Video:
     video = await db_session.get(Video, result.video_id)
     assert video is not None
     assert video.stage_status == VideoStageStatus.SCRIPT_APPROVED
+    return video
+
+
+async def _create_video_ready_for_preview(db_session, *, slug_suffix: str = "template") -> Video:
+    channel = Channel(name="Template Channel", slug=f"template-{slug_suffix}")
+    asset = AssetPool(
+        asset_type="background_image",
+        name="Template Asset",
+        slug=f"template-asset-{slug_suffix}",
+        source_url="local",
+        source_path=f"storage/assets/manual/template-{slug_suffix}.png",
+        license_name="generated-local",
+        license_url=None,
+        status=LifecycleStatus.ACTIVE,
+    )
+    video = Video(
+        channel=channel,
+        title="Template Video",
+        slug=f"template-video-{slug_suffix}",
+        status=WorkflowStatus.APPROVED,
+        stage_status=VideoStageStatus.ASSET_READY,
+        asset=asset,
+        audio_path=f"storage/audio/template-{slug_suffix}.mp3",
+        caption_path=f"storage/captions/template-{slug_suffix}.srt",
+    )
+    db_session.add_all([channel, asset, video])
+    await db_session.commit()
+    await db_session.refresh(video)
+    await db_session.refresh(asset)
     return video
 
 
@@ -303,6 +339,123 @@ async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_da
 
     cost_log_count = await db_session.scalar(select(func.count()).select_from(CostLog))
     assert cost_log_count == 0
+
+
+@pytest.mark.asyncio
+async def test_internal_video_preview_defaults_to_default_template(
+    db_session,
+    temp_database_url: str,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    commands: list[list[str]] = []
+
+    def _fake_run_command(command: list[str]) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(render_worker_module, "run_command", _fake_run_command)
+
+    video = await _create_video_ready_for_preview(db_session, slug_suffix="default")
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            preview_response = client.post(f"/internal/videos/{video.id}/preview")
+            assert preview_response.status_code == 200
+            preview_state = VideoPipelineResponse.model_validate(preview_response.json())
+            assert preview_state.stage_status == VideoStageStatus.PREVIEW_READY.value
+            assert preview_state.visual_template == "default"
+
+            status_response = client.get(f"/internal/videos/{video.id}/status")
+            assert status_response.status_code == 200
+            status_state = VideoPipelineResponse.model_validate(status_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert status_state.visual_template == "default"
+    assert commands
+    assert "FontSize=28" in " ".join(commands[0])
+
+
+@pytest.mark.asyncio
+async def test_internal_video_preview_rejects_unknown_template(
+    db_session,
+    temp_database_url: str,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    video = await _create_video_ready_for_preview(db_session, slug_suffix="invalid")
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            preview_response = client.post(
+                f"/internal/videos/{video.id}/preview",
+                json={"visual_template": "neon_mist"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert preview_response.status_code == 400
+    assert "Unknown visual template" in preview_response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_internal_video_preview_dark_overlay_changes_render_parameters(
+    db_session,
+    temp_database_url: str,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    commands: list[list[str]] = []
+
+    def _fake_run_command(command: list[str]) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(render_worker_module, "run_command", _fake_run_command)
+
+    video = await _create_video_ready_for_preview(db_session, slug_suffix="dark")
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            preview_response = client.post(
+                f"/internal/videos/{video.id}/preview",
+                json={"visual_template": "dark_overlay"},
+            )
+            assert preview_response.status_code == 200
+            preview_state = VideoPipelineResponse.model_validate(preview_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert preview_state.visual_template == "dark_overlay"
+    assert commands
+    command_text = " ".join(commands[0])
+    assert "color=c=black@0.32" in command_text
+    assert "FontSize=30" in command_text
 
 
 @pytest.mark.asyncio

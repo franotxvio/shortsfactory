@@ -30,6 +30,7 @@ type VideoItem = {
   call_to_action?: string | null;
   estimated_duration_seconds?: number | null;
   style_tone?: string | null;
+  visual_template?: string | null;
 };
 
 type AssetItem = {
@@ -78,6 +79,8 @@ const DEFAULT_ASSET_FORM = {
   topic: "",
   tagsText: "python, background",
 };
+
+const DEFAULT_VISUAL_TEMPLATE = "default";
 
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -173,6 +176,7 @@ export default function DashboardPage() {
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
   const [scriptDraft, setScriptDraft] = useState("");
+  const [selectedVisualTemplate, setSelectedVisualTemplate] = useState(DEFAULT_VISUAL_TEMPLATE);
   const [assetFilePath, setAssetFilePath] = useState(DEFAULT_ASSET_FORM.filePath);
   const [assetName, setAssetName] = useState(DEFAULT_ASSET_FORM.name);
   const [assetSlug, setAssetSlug] = useState(DEFAULT_ASSET_FORM.slug);
@@ -225,6 +229,14 @@ export default function DashboardPage() {
     return video?.stage_status === "caption_done" || video?.stage_status === "asset_ready";
   }
 
+  function canChangeTemplate(video: VideoItem | null) {
+    if (!video) {
+      return false;
+    }
+    const lockedStages = ["preview_ready", "preview_approved", "final_rendered"];
+    return !lockedStages.includes(video.stage_status);
+  }
+
   function parseTagsInput(value: string) {
     return value
       .split(",")
@@ -253,7 +265,9 @@ export default function DashboardPage() {
           ? selectedVideoIdRef.current
           : items[0]?.video_id ?? null;
       setSelectedVideoId(nextSelectedId);
-      setScriptDraft(buildScriptDraft(items.find((item) => item.video_id === nextSelectedId) ?? null));
+      const nextSelectedVideo = items.find((item) => item.video_id === nextSelectedId) ?? null;
+      setScriptDraft(buildScriptDraft(nextSelectedVideo));
+      setSelectedVisualTemplate(nextSelectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
       if (!quiet) {
         setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
       }
@@ -296,12 +310,14 @@ export default function DashboardPage() {
     setSelectedVideoId(nextVideo.video_id);
     selectedVideoIdRef.current = nextVideo.video_id;
     setScriptDraft(buildScriptDraft(nextVideo));
+    setSelectedVisualTemplate(nextVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
   }
 
   function selectVideo(video: VideoItem) {
     setSelectedVideoId(video.video_id);
     selectedVideoIdRef.current = video.video_id;
     setScriptDraft(buildScriptDraft(video));
+    setSelectedVisualTemplate(video.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
   }
 
   async function createFakeVideo() {
@@ -347,6 +363,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           auto_approve_preview: true,
           execution_mode: "fake",
+          visual_template: selectedVisualTemplate,
         }),
       });
       mergeVideo(produced);
@@ -542,15 +559,19 @@ export default function DashboardPage() {
 
     setBusyAction(step);
     try {
-      const payload = stepModes[step]
-        ? { execution_mode: "fake" }
-        : undefined;
+      const payload =
+        step === "preview"
+          ? { visual_template: selectedVisualTemplate }
+          : stepModes[step]
+            ? { execution_mode: "fake" }
+            : undefined;
       const updated = await requestJson<VideoItem>(apiBaseUrl, stepPaths[step], {
         method: "POST",
         body: payload ? JSON.stringify(payload) : undefined,
       });
       mergeVideo(updated);
       setScriptDraft(buildScriptDraft(updated));
+      setSelectedVisualTemplate(updated.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
       setMessage({ kind: "success", text: `${stepLabels[step]} executado com sucesso.` });
       void loadVideos({ quiet: true });
       void loadAssets({ quiet: true });
@@ -681,7 +702,8 @@ export default function DashboardPage() {
                       </div>
                       <div className="badges">
                         <span className="badge">{video.status}</span>
-                        <span className="badge accent">{video.stage_status}</span>
+                <span className="badge accent">{video.stage_status}</span>
+                        <span className="badge subtle">template: {video.visual_template ?? DEFAULT_VISUAL_TEMPLATE}</span>
                         {video.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
                       </div>
                     </div>
@@ -755,6 +777,9 @@ export default function DashboardPage() {
                 </p>
               ) : null}
               <p>
+                <strong>Template visual:</strong> {selectedVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE}
+              </p>
+              <p>
                 <strong>Asset:</strong> {selectedVideo.asset_id ?? "pendente"}
               </p>
               {selectedVideo.asset_name || selectedVideo.asset_slug || selectedVideo.asset_type ? (
@@ -806,6 +831,23 @@ export default function DashboardPage() {
               <div className="panel-header">
                 <h3>Controle por etapa</h3>
                 <span className="panel-hint">stage atual: {selectedVideo.stage_status}</span>
+              </div>
+              <div className="template-picker">
+                <label className="field">
+                  <span>Template visual</span>
+                  <select
+                    value={selectedVisualTemplate}
+                    onChange={(event) => setSelectedVisualTemplate(event.target.value)}
+                    disabled={!canChangeTemplate(selectedVideo) || busyAction !== null}
+                  >
+                    <option value="default">default</option>
+                    <option value="dark_overlay">dark_overlay</option>
+                    <option value="big_captions">big_captions</option>
+                  </select>
+                </label>
+                <p className="helper">
+                  O template altera apenas preview/final. Depois de preview_ready, a troca fica bloqueada.
+                </p>
               </div>
               <div className="stage-step-grid">
                 <button

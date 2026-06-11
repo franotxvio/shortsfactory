@@ -41,6 +41,7 @@ class VideoProductionResult:
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    visual_template: str = "default"
 
 
 @dataclass(slots=True)
@@ -71,6 +72,7 @@ class VideoPipelineState:
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    visual_template: str = "default"
 
 
 class _DeterministicTTSClient:
@@ -102,7 +104,13 @@ class VideoProductionService:
         self.asset_service = asset_service or AssetPoolService(session, settings=self.settings)
         self.render_worker = render_worker or RenderWorker(session, settings=self.settings)
 
-    async def produce_full_video(self, *, video_id: int, auto_approve_preview: bool = True) -> VideoProductionResult:
+    async def produce_full_video(
+        self,
+        *,
+        video_id: int,
+        auto_approve_preview: bool = True,
+        visual_template: str | None = None,
+    ) -> VideoProductionResult:
         statement = select(Video.status, Video.stage_status).where(Video.id == video_id)
         row = (await self.session.execute(statement)).one_or_none()
         if row is None:
@@ -115,7 +123,7 @@ class VideoProductionService:
         tts_result = await self.run_tts(video_id=video_id, execution_mode=VideoExecutionMode.FAKE)
         caption_result = await self.generate_captions(video_id=video_id, execution_mode=VideoExecutionMode.FAKE)
         asset_result = await self.select_asset(video_id=video_id)
-        preview_result = await self.render_preview(video_id=video_id)
+        preview_result = await self.render_preview(video_id=video_id, visual_template=visual_template)
         if auto_approve_preview:
             await self.approve_preview(video_id=video_id)
         final_result = await self.render_final(video_id=video_id)
@@ -333,8 +341,8 @@ class VideoProductionService:
             tags=tags,
         )
 
-    async def render_preview(self, *, video_id: int):
-        return await self.render_worker.render_preview(video_id=video_id)
+    async def render_preview(self, *, video_id: int, visual_template: str | None = None):
+        return await self.render_worker.render_preview(video_id=video_id, visual_template=visual_template)
 
     async def approve_preview(self, *, video_id: int):
         return await self.render_worker.approve_preview(video_id=video_id)
@@ -510,7 +518,9 @@ class VideoProductionService:
         call_to_action: str | None = None,
         estimated_duration_seconds: int | None = None,
         style_tone: str | None = None,
+        visual_template: str | None = None,
     ) -> VideoPipelineState:
+        resolved_visual_template = visual_template or self.render_worker.get_visual_template(video.id)
         return VideoPipelineState(
             video_id=video.id,
             video_slug=video.slug,
@@ -538,6 +548,7 @@ class VideoProductionService:
             call_to_action=call_to_action,
             estimated_duration_seconds=estimated_duration_seconds,
             style_tone=style_tone,
+            visual_template=resolved_visual_template,
         )
 
     def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
@@ -560,6 +571,7 @@ class VideoProductionService:
             call_to_action=state.call_to_action,
             estimated_duration_seconds=state.estimated_duration_seconds,
             style_tone=state.style_tone,
+            visual_template=state.visual_template,
         )
 
     def _build_fake_script(self, *, topic: str) -> str:

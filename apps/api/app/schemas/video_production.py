@@ -11,6 +11,7 @@ from app.models.enums import VideoExecutionMode
 class VideoProductionRequest(BaseModel):
     auto_approve_preview: bool = Field(default=True)
     execution_mode: VideoExecutionMode = Field(default=VideoExecutionMode.FAKE)
+    visual_template: str = Field(default="default", max_length=64)
 
 
 class VideoProductionResponse(BaseModel):
@@ -36,6 +37,7 @@ class VideoProductionResponse(BaseModel):
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    visual_template: str = "default"
 
 
 class VideoCreateRequest(BaseModel):
@@ -48,6 +50,10 @@ class VideoCreateRequest(BaseModel):
 
 class VideoStepRequest(BaseModel):
     execution_mode: VideoExecutionMode = Field(default=VideoExecutionMode.FAKE)
+
+
+class VideoPreviewRequest(BaseModel):
+    visual_template: str = Field(default="default", max_length=64)
 
 
 class VideoAssetSelectionRequest(BaseModel):
@@ -126,6 +132,7 @@ class VideoPipelineResponse(BaseModel):
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    visual_template: str = "default"
 
 
 class VideoListResponse(BaseModel):

@@ -17,6 +17,7 @@ from app.schemas.video_production import (
     VideoAssetSelectionRequest,
     VideoListResponse,
     VideoPipelineResponse,
+    VideoPreviewRequest,
     VideoScriptUpdateRequest,
     VideoProductionRequest,
     VideoProductionResponse,
@@ -222,6 +223,7 @@ async def produce_video(
         produced = await service.produce_full_video(
             video_id=video_id,
             auto_approve_preview=payload.auto_approve_preview,
+            visual_template=payload.visual_template,
         )
         await _commit_if_available(service)
         get_status = getattr(service, "get_status", None)
@@ -344,10 +346,14 @@ async def select_asset(
 @router.post("/{video_id}/preview", response_model=VideoPipelineResponse)
 async def render_preview(
     video_id: int,
+    payload: VideoPreviewRequest | None = Body(default=None),
     service: VideoProductionService = Depends(get_video_production_service),
 ) -> VideoPipelineResponse:
     try:
-        await service.render_preview(video_id=video_id)
+        await service.render_preview(
+            video_id=video_id,
+            visual_template=payload.visual_template if payload is not None else None,
+        )
         await _commit_if_available(service)
         result = await service.get_status(video_id=video_id)
     except ValueError as error:
