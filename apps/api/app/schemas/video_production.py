@@ -17,6 +17,7 @@ class VideoProductionRequest(BaseModel):
 class VideoProductionResponse(BaseModel):
     video_id: int
     channel_slug: str | None = None
+    target_duration_seconds: int | None = None
     audio_path: str
     caption_path: str
     preview_path: str
@@ -113,6 +114,7 @@ class VideoPipelineResponse(BaseModel):
     video_id: int
     video_slug: str | None = None
     channel_slug: str | None = None
+    target_duration_seconds: int | None = None
     status: str
     stage_status: str
     script_id: int | None = None
@@ -138,6 +140,30 @@ class VideoPipelineResponse(BaseModel):
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
     visual_template: str = "default"
+
+
+class ChannelPresetUpsertRequest(BaseModel):
+    channel_slug: str = Field(min_length=1, max_length=160)
+    channel_name: str = Field(min_length=1, max_length=255)
+    default_topic_style: str | None = Field(default=None, max_length=255)
+    default_visual_template: str = Field(default="default", max_length=64)
+    default_asset_slug: str | None = Field(default=None, max_length=160)
+    default_cta: str | None = Field(default=None, max_length=2_000)
+    target_duration_seconds: int | None = Field(default=None, ge=1, le=3_600)
+
+
+class ChannelPresetResponse(BaseModel):
+    channel_slug: str
+    channel_name: str
+    default_topic_style: str | None = None
+    default_visual_template: str = "default"
+    default_asset_slug: str | None = None
+    default_cta: str | None = None
+    target_duration_seconds: int | None = None
+
+
+class ChannelPresetListResponse(BaseModel):
+    items: list[ChannelPresetResponse]
 
 
 class VideoListResponse(BaseModel):

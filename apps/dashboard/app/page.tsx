@@ -31,6 +31,7 @@ type VideoItem = {
   estimated_duration_seconds?: number | null;
   style_tone?: string | null;
   visual_template?: string | null;
+  target_duration_seconds?: number | null;
 };
 
 type AssetItem = {
@@ -54,6 +55,20 @@ type VideoListResponse = {
 
 type AssetListResponse = {
   items: AssetItem[];
+};
+
+type ChannelPresetItem = {
+  channel_slug: string;
+  channel_name: string;
+  default_topic_style?: string | null;
+  default_visual_template?: string;
+  default_asset_slug?: string | null;
+  default_cta?: string | null;
+  target_duration_seconds?: number | null;
+};
+
+type ChannelPresetListResponse = {
+  items: ChannelPresetItem[];
 };
 
 type MessageState = {
@@ -173,11 +188,18 @@ export default function DashboardPage() {
   const [videoTitle, setVideoTitle] = useState(DEFAULT_FORM.videoTitle);
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [assets, setAssets] = useState<AssetItem[]>([]);
+  const [channelPresets, setChannelPresets] = useState<ChannelPresetItem[]>([]);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
   const [scriptDraft, setScriptDraft] = useState("");
   const [selectedVisualTemplate, setSelectedVisualTemplate] = useState(DEFAULT_VISUAL_TEMPLATE);
   const [pendingAssetId, setPendingAssetId] = useState<number | null>(null);
+  const [presetChannelName, setPresetChannelName] = useState(DEFAULT_FORM.channelName);
+  const [presetDefaultTopicStyle, setPresetDefaultTopicStyle] = useState("");
+  const [presetDefaultVisualTemplate, setPresetDefaultVisualTemplate] = useState(DEFAULT_VISUAL_TEMPLATE);
+  const [presetDefaultAssetSlug, setPresetDefaultAssetSlug] = useState("");
+  const [presetDefaultCta, setPresetDefaultCta] = useState("");
+  const [presetTargetDurationSeconds, setPresetTargetDurationSeconds] = useState("");
   const [assetFilePath, setAssetFilePath] = useState(DEFAULT_ASSET_FORM.filePath);
   const [assetName, setAssetName] = useState(DEFAULT_ASSET_FORM.name);
   const [assetSlug, setAssetSlug] = useState(DEFAULT_ASSET_FORM.slug);
@@ -192,6 +214,10 @@ export default function DashboardPage() {
   const selectedVideo = useMemo(
     () => videos.find((video) => video.video_id === selectedVideoId) ?? null,
     [selectedVideoId, videos],
+  );
+  const activeChannelPreset = useMemo(
+    () => channelPresets.find((preset) => preset.channel_slug === channelSlug.trim()) ?? null,
+    [channelPresets, channelSlug],
   );
   const selectedVideoVisualTemplate = selectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE;
   const scriptEditable = selectedVideo?.stage_status === "script_approved";
@@ -260,6 +286,10 @@ export default function DashboardPage() {
       .filter(Boolean);
   }
 
+  function formatTargetDuration(value: number | null | undefined) {
+    return value ? `${value}s` : "opcional";
+  }
+
   useEffect(() => {
     apiBaseUrlRef.current = apiBaseUrl;
   }, [apiBaseUrl]);
@@ -310,6 +340,23 @@ export default function DashboardPage() {
     } catch (error) {
       if (!quiet) {
         setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao carregar assets." });
+      }
+    }
+  }, []);
+
+  const loadChannelPresets = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
+    const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
+    const quiet = options?.quiet ?? false;
+    try {
+      const payload = await requestJson<ChannelPresetListResponse>(baseUrl, "/internal/videos/channel-presets");
+      const items = payload.items ?? [];
+      setChannelPresets(items);
+      if (!quiet) {
+        setMessage({ kind: "success", text: `Foram carregados ${items.length} presets de canal.` });
+      }
+    } catch (error) {
+      if (!quiet) {
+        setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao carregar presets." });
       }
     }
   }, []);
@@ -548,6 +595,47 @@ export default function DashboardPage() {
     }
   }
 
+  async function saveChannelPreset() {
+    if (!channelSlug.trim()) {
+      setMessage({ kind: "error", text: "Informe um channel_slug antes de salvar o preset." });
+      return;
+    }
+    if (!presetChannelName.trim()) {
+      setMessage({ kind: "error", text: "Informe o nome do canal antes de salvar o preset." });
+      return;
+    }
+
+    const parsedDuration = presetTargetDurationSeconds.trim() ? Number(presetTargetDurationSeconds) : null;
+    if (parsedDuration !== null && (!Number.isInteger(parsedDuration) || parsedDuration <= 0)) {
+      setMessage({ kind: "error", text: "A duracao alvo precisa ser um inteiro positivo." });
+      return;
+    }
+
+    setBusyAction("save-preset");
+    try {
+      const savedPreset = await requestJson<ChannelPresetItem>(apiBaseUrl, "/internal/videos/channel-presets", {
+        method: "POST",
+        body: JSON.stringify({
+          channel_slug: channelSlug,
+          channel_name: presetChannelName,
+          default_topic_style: presetDefaultTopicStyle || undefined,
+          default_visual_template: presetDefaultVisualTemplate,
+          default_asset_slug: presetDefaultAssetSlug || undefined,
+          default_cta: presetDefaultCta || undefined,
+          target_duration_seconds: parsedDuration ?? undefined,
+        }),
+      });
+      setChannelSlug(savedPreset.channel_slug);
+      setChannelName(savedPreset.channel_name);
+      await loadChannelPresets({ quiet: true });
+      setMessage({ kind: "success", text: `Preset do canal ${savedPreset.channel_slug} salvo com sucesso.` });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao salvar preset do canal." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function runPipelineStep(step: "tts" | "captions" | "asset" | "preview" | "approve-preview" | "final") {
     if (selectedVideoId === null) {
       setMessage({ kind: "error", text: "Selecione um video antes de executar uma etapa." });
@@ -662,9 +750,10 @@ export default function DashboardPage() {
     const timer = window.setTimeout(() => {
       void loadVideos();
       void loadAssets({ quiet: true });
+      void loadChannelPresets({ quiet: true });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadVideos, loadAssets]);
+  }, [loadVideos, loadAssets, loadChannelPresets]);
 
   return (
     <main className="shell">
@@ -689,6 +778,7 @@ export default function DashboardPage() {
               onClick={() => {
                 void loadVideos();
                 void loadAssets({ quiet: true });
+                void loadChannelPresets({ quiet: true });
               }}
               disabled={loading}
             >
@@ -730,6 +820,80 @@ export default function DashboardPage() {
           <button type="button" className="primary" onClick={createFakeVideo} disabled={busyAction !== null}>
             {busyAction === "create" ? "Criando..." : "Criar video fake"}
           </button>
+
+          <div className="panel-header spaced">
+            <h2>Presets do canal</h2>
+            <span className="panel-hint">{channelPresets.length} itens salvos</span>
+          </div>
+          {activeChannelPreset ? (
+            <div className="detail-asset">
+              <p>
+                <strong>Preset ativo:</strong> {activeChannelPreset.channel_slug}
+              </p>
+              <p>
+                <strong>Canal:</strong> {activeChannelPreset.channel_name}
+              </p>
+              <p>
+                <strong>Template:</strong> {activeChannelPreset.default_visual_template ?? DEFAULT_VISUAL_TEMPLATE}
+              </p>
+              <p>
+                <strong>Asset padrao:</strong> {activeChannelPreset.default_asset_slug ?? "nenhum"}
+              </p>
+              <p>
+                <strong>CTA padrao:</strong> {activeChannelPreset.default_cta ?? "nenhum"}
+              </p>
+              <p>
+                <strong>Duracao alvo:</strong> {formatTargetDuration(activeChannelPreset.target_duration_seconds)}
+              </p>
+              <p>
+                <strong>Tom/estilo:</strong> {activeChannelPreset.default_topic_style ?? "padrao"}
+              </p>
+            </div>
+          ) : (
+            <p className="helper">Nenhum preset ativo para o channel_slug atual.</p>
+          )}
+          <div className="asset-form">
+            <div className="asset-form-grid">
+              <label className="field">
+                <span>Nome do canal</span>
+                <input value={presetChannelName} onChange={(event) => setPresetChannelName(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>Tom/estilo padrao</span>
+                <input value={presetDefaultTopicStyle} onChange={(event) => setPresetDefaultTopicStyle(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>Template visual padrao</span>
+                <select value={presetDefaultVisualTemplate} onChange={(event) => setPresetDefaultVisualTemplate(event.target.value)}>
+                  <option value="default">default</option>
+                  <option value="dark_overlay">dark_overlay</option>
+                  <option value="big_captions">big_captions</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Asset padrao slug</span>
+                <input value={presetDefaultAssetSlug} onChange={(event) => setPresetDefaultAssetSlug(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>CTA padrao</span>
+                <input value={presetDefaultCta} onChange={(event) => setPresetDefaultCta(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>Duracao alvo em segundos</span>
+                <input
+                  inputMode="numeric"
+                  value={presetTargetDurationSeconds}
+                  onChange={(event) => setPresetTargetDurationSeconds(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="asset-form-actions">
+              <span className="panel-hint">Salvo em storage/config/channel-presets</span>
+              <button type="button" className="primary secondary" onClick={() => void saveChannelPreset()} disabled={busyAction !== null}>
+                {busyAction === "save-preset" ? "Salvando..." : "Salvar preset"}
+              </button>
+            </div>
+          </div>
 
           <div className="panel-header spaced">
             <h2>Pipeline fake</h2>
@@ -845,6 +1009,11 @@ export default function DashboardPage() {
               {selectedVideo.estimated_duration_seconds ? (
                 <p>
                   <strong>Duracao estimada:</strong> {selectedVideo.estimated_duration_seconds}s
+                </p>
+              ) : null}
+              {selectedVideo.target_duration_seconds ? (
+                <p>
+                  <strong>Duracao alvo:</strong> {selectedVideo.target_duration_seconds}s
                 </p>
               ) : null}
               {selectedVideo.style_tone ? (

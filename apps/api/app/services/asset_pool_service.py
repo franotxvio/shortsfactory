@@ -181,6 +181,16 @@ class AssetPoolService:
             topic=topic,
             tags=tags,
         )
+        if (
+            asset is None
+            and asset_id is None
+            and asset_slug is None
+            and channel_slug is None
+            and topic is None
+            and tags is None
+            and video.asset_id is not None
+        ):
+            asset = await self._get_asset_by_id(video.asset_id)
         if asset is None:
             asset = await self._get_or_create_default_asset()
         self._ensure_supported_background_asset(

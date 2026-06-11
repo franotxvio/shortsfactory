@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -12,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.models.core import Channel, Script, Video
+from app.models.core import AssetPool, Channel, Script, Video
 from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStatus, WorkflowStatus
 from app.services.asset_pool_service import AssetPoolService
 from app.services.caption_worker import CaptionWorker
@@ -20,6 +22,20 @@ from app.services.media_utils import build_deterministic_mp3_bytes
 from app.services.render_worker import RenderWorker
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
+
+
+_CHANNEL_PRESET_ALLOWED_TEMPLATES = {"default", "dark_overlay", "big_captions"}
+
+
+@dataclass(slots=True)
+class ChannelPresetRecord:
+    channel_slug: str
+    channel_name: str
+    default_topic_style: str | None = None
+    default_visual_template: str = "default"
+    default_asset_slug: str | None = None
+    default_cta: str | None = None
+    target_duration_seconds: int | None = None
 
 
 @dataclass(slots=True)
@@ -43,6 +59,7 @@ class VideoProductionResult:
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
     visual_template: str = "default"
+    target_duration_seconds: int | None = None
 
 
 @dataclass(slots=True)
@@ -74,6 +91,7 @@ class VideoPipelineState:
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
     visual_template: str = "default"
+    target_duration_seconds: int | None = None
 
 
 class _DeterministicTTSClient:
@@ -148,6 +166,7 @@ class VideoProductionService:
             call_to_action=final_state.call_to_action,
             estimated_duration_seconds=final_state.estimated_duration_seconds,
             style_tone=final_state.style_tone,
+            target_duration_seconds=final_state.target_duration_seconds,
         )
 
     async def list_recent_videos(self, *, limit: int = 20) -> list[VideoPipelineState]:
@@ -194,19 +213,77 @@ class VideoProductionService:
         video_title: str | None = None,
         execution_mode: VideoExecutionMode = VideoExecutionMode.FAKE,
     ) -> VideoPipelineState:
+        preset = await self.get_channel_preset(channel_slug=channel_slug)
+        if self.session.in_transaction():
+            await self.session.rollback()
         if execution_mode == VideoExecutionMode.REAL:
             return await self._create_real_test_video(
                 topic=topic,
                 channel_slug=channel_slug,
                 channel_name=channel_name,
                 video_title=video_title,
+                preset=preset,
             )
         return await self._create_fake_test_video(
             topic=topic,
             channel_slug=channel_slug,
             channel_name=channel_name,
             video_title=video_title,
+            preset=preset,
         )
+
+    async def list_channel_presets(self) -> list[ChannelPresetRecord]:
+        presets_path = self._channel_presets_dir()
+        if not presets_path.exists():
+            return []
+
+        records: list[ChannelPresetRecord] = []
+        for preset_file in sorted(presets_path.glob("*.json")):
+            record = self._read_channel_preset_file(preset_file)
+            if record is not None:
+                records.append(record)
+        records.sort(key=lambda item: item.channel_slug)
+        return records
+
+    async def get_channel_preset(self, *, channel_slug: str) -> ChannelPresetRecord | None:
+        preset_file = self._channel_preset_path(channel_slug)
+        if not preset_file.exists():
+            return None
+        return self._read_channel_preset_file(preset_file)
+
+    async def upsert_channel_preset(
+        self,
+        *,
+        channel_slug: str,
+        channel_name: str,
+        default_topic_style: str | None = None,
+        default_visual_template: str = "default",
+        default_asset_slug: str | None = None,
+        default_cta: str | None = None,
+        target_duration_seconds: int | None = None,
+    ) -> ChannelPresetRecord:
+        normalized_slug = self._normalize_channel_slug(channel_slug)
+        normalized_name = channel_name.strip()
+        if not normalized_name:
+            raise ValueError("channel_name is required")
+        normalized_template = self._normalize_visual_template(default_visual_template)
+        normalized_topic_style = self._normalize_optional_text(default_topic_style)
+        normalized_asset_slug = self._normalize_optional_text(default_asset_slug)
+        normalized_cta = self._normalize_optional_text(default_cta)
+        normalized_duration = self._normalize_optional_duration(target_duration_seconds)
+
+        record = ChannelPresetRecord(
+            channel_slug=normalized_slug,
+            channel_name=normalized_name,
+            default_topic_style=normalized_topic_style,
+            default_visual_template=normalized_template,
+            default_asset_slug=normalized_asset_slug,
+            default_cta=normalized_cta,
+            target_duration_seconds=normalized_duration,
+        )
+        preset_file = self._channel_preset_path(normalized_slug)
+        self._write_channel_preset_file(preset_file, record)
+        return record
 
     async def update_script(
         self,
@@ -424,21 +501,41 @@ class VideoProductionService:
         channel_slug: str,
         channel_name: str,
         video_title: str | None,
+        preset: ChannelPresetRecord | None = None,
     ) -> VideoPipelineState:
         async with self.session.begin():
-            channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name)
+            channel_name_to_use = preset.channel_name if preset is not None else channel_name
+            channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name_to_use)
             video_slug = f"{self._slugify(topic)}-{uuid4().hex[:8]}"
+            target_duration = preset.target_duration_seconds if preset is not None else None
             video = Video(
                 channel_id=channel.id,
                 title=video_title or f"Teste local: {topic}",
                 slug=video_slug,
                 status=WorkflowStatus.APPROVED,
                 stage_status=VideoStageStatus.SCRIPT_APPROVED,
+                target_duration_seconds=target_duration,
             )
             self.session.add(video)
             await self.session.flush()
 
-            script_content = self._build_fake_script_payload(topic=topic)
+            script_content = self._build_fake_script_payload(
+                topic=topic,
+                style_tone=preset.default_topic_style if preset is not None else None,
+                default_cta=preset.default_cta if preset is not None else None,
+                target_duration_seconds=target_duration,
+            )
+            preset_asset = await self._get_asset_by_slug(preset.default_asset_slug) if preset and preset.default_asset_slug else None
+            if preset_asset is not None:
+                self.asset_service._ensure_supported_background_asset(
+                    Path(preset_asset.source_path) if preset_asset.source_path else None,
+                    preset_asset.asset_type,
+                )
+                video.asset_id = preset_asset.id
+                video.asset = preset_asset
+                await self.session.flush()
+            if preset is not None and preset.default_visual_template:
+                self.render_worker.set_visual_template(video_id=video.id, visual_template=preset.default_visual_template)
             script = Script(
                 video_id=video.id,
                 topic=topic,
@@ -454,7 +551,7 @@ class VideoProductionService:
                     "mode": "fake",
                     "topic": topic,
                     "channel_slug": channel_slug,
-                    "channel_name": channel_name,
+                    "channel_name": channel_name_to_use,
                     "video_title": video_title,
                     "script": script_content,
                 },
@@ -470,13 +567,21 @@ class VideoProductionService:
                 channel_slug=channel_slug,
                 script_id=script.id,
                 script_status=script.status.value,
-                asset_path=None,
+                asset_path=preset_asset.source_path if preset_asset is not None else None,
+                asset_name=preset_asset.name if preset_asset is not None else None,
+                asset_slug=preset_asset.slug if preset_asset is not None else None,
+                asset_type=preset_asset.asset_type if preset_asset is not None else None,
+                asset_channel_slug=self.asset_service.describe_asset(preset_asset).channel_slug if preset_asset is not None else None,
+                asset_topic=self.asset_service.describe_asset(preset_asset).topic if preset_asset is not None else None,
+                asset_tags=self.asset_service.describe_asset(preset_asset).tags if preset_asset is not None else None,
                 script_text=script_content["script"],
                 hook=script_content["hook"],
                 body_blocks=script_content["body_blocks"],
                 call_to_action=script_content["call_to_action"],
                 estimated_duration_seconds=script_content["estimated_duration_seconds"],
                 style_tone=script_content["style_tone"],
+                visual_template=preset.default_visual_template if preset is not None else None,
+                target_duration_seconds=target_duration,
             )
         return state
 
@@ -487,31 +592,55 @@ class VideoProductionService:
         channel_slug: str,
         channel_name: str,
         video_title: str | None,
+        preset: ChannelPresetRecord | None = None,
     ) -> VideoPipelineState:
         service = ScriptEngineService(session=self.session, settings=self.settings)
         result = await service.create_test_script(
             topic=topic,
             channel_slug=channel_slug,
-            channel_name=channel_name,
+            channel_name=preset.channel_name if preset is not None else channel_name,
             video_title=video_title,
             execution_mode=VideoExecutionMode.REAL,
+            style_tone=preset.default_topic_style if preset is not None else None,
+            default_call_to_action=preset.default_cta if preset is not None else None,
+            target_duration_seconds=preset.target_duration_seconds if preset is not None else None,
         )
         statement = select(Video).options(selectinload(Video.channel), selectinload(Video.asset)).where(Video.id == result.video_id)
         video = await self.session.scalar(statement)
         if video is None:
             raise ValueError(f"Video {result.video_id} not found")
+        video.target_duration_seconds = preset.target_duration_seconds if preset is not None else video.target_duration_seconds
+        preset_asset = await self._get_asset_by_slug(preset.default_asset_slug) if preset and preset.default_asset_slug else None
+        if preset_asset is not None:
+            self.asset_service._ensure_supported_background_asset(
+                Path(preset_asset.source_path) if preset_asset.source_path else None,
+                preset_asset.asset_type,
+            )
+            video.asset_id = preset_asset.id
+            video.asset = preset_asset
+        if preset is not None and preset.default_visual_template:
+            self.render_worker.set_visual_template(video_id=video.id, visual_template=preset.default_visual_template)
+        await self.session.flush()
         return self._build_state(
             video,
             channel_slug=video.channel.slug if video.channel is not None else None,
             script_id=result.script_id,
             script_status=result.script_status,
-            asset_path=None,
+            asset_path=preset_asset.source_path if preset_asset is not None else None,
+            asset_name=preset_asset.name if preset_asset is not None else None,
+            asset_slug=preset_asset.slug if preset_asset is not None else None,
+            asset_type=preset_asset.asset_type if preset_asset is not None else None,
+            asset_channel_slug=self.asset_service.describe_asset(preset_asset).channel_slug if preset_asset is not None else None,
+            asset_topic=self.asset_service.describe_asset(preset_asset).topic if preset_asset is not None else None,
+            asset_tags=self.asset_service.describe_asset(preset_asset).tags if preset_asset is not None else None,
             script_text=result.script_text,
             hook=result.hook,
             body_blocks=result.body_blocks,
             call_to_action=result.call_to_action,
             estimated_duration_seconds=result.estimated_duration_seconds,
             style_tone=result.style_tone,
+            visual_template=preset.default_visual_template if preset is not None else None,
+            target_duration_seconds=video.target_duration_seconds,
         )
 
     async def _get_or_create_channel(self, *, channel_slug: str, channel_name: str) -> Channel:
@@ -559,6 +688,7 @@ class VideoProductionService:
         estimated_duration_seconds: int | None = None,
         style_tone: str | None = None,
         visual_template: str | None = None,
+        target_duration_seconds: int | None = None,
     ) -> VideoPipelineState:
         resolved_visual_template = visual_template or self.render_worker.get_visual_template(video.id)
         return VideoPipelineState(
@@ -589,6 +719,7 @@ class VideoProductionService:
             estimated_duration_seconds=estimated_duration_seconds,
             style_tone=style_tone,
             visual_template=resolved_visual_template,
+            target_duration_seconds=target_duration_seconds if target_duration_seconds is not None else video.target_duration_seconds,
         )
 
     def _build_production_result_from_state(self, state: VideoPipelineState) -> VideoProductionResult:
@@ -612,6 +743,7 @@ class VideoProductionService:
             estimated_duration_seconds=state.estimated_duration_seconds,
             style_tone=state.style_tone,
             visual_template=state.visual_template,
+            target_duration_seconds=state.target_duration_seconds,
         )
 
     def _build_fake_script(self, *, topic: str) -> str:
@@ -620,7 +752,14 @@ class VideoProductionService:
             "Depois explique em tres pontos curtos e termine com uma chamada direta para a audiencia."
         )
 
-    def _build_fake_script_payload(self, *, topic: str) -> dict[str, object]:
+    def _build_fake_script_payload(
+        self,
+        *,
+        topic: str,
+        style_tone: str | None = None,
+        default_cta: str | None = None,
+        target_duration_seconds: int | None = None,
+    ) -> dict[str, object]:
         topic_text = topic.strip() or "o tema"
         hook = f"Voce ja viu {topic_text} por este angulo?"
         body_count = 3 + int(hashlib.sha256(topic_text.encode("utf-8")).hexdigest()[:2], 16) % 3
@@ -632,8 +771,13 @@ class VideoProductionService:
             "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
         ]
         body_blocks = body_templates[:body_count]
-        call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
-        estimated_duration_seconds = 24 + len(body_blocks) * 6
+        call_to_action = (
+            default_cta
+            or "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+        )
+        estimated_duration_seconds = (
+            target_duration_seconds if target_duration_seconds is not None else 24 + len(body_blocks) * 6
+        )
         script_text = "\n\n".join([hook, *body_blocks, call_to_action])
         return {
             "title": f"Roteiro curto: {topic_text}",
@@ -641,7 +785,7 @@ class VideoProductionService:
             "body_blocks": body_blocks,
             "call_to_action": call_to_action,
             "estimated_duration_seconds": estimated_duration_seconds,
-            "style_tone": "didatico e direto",
+            "style_tone": style_tone or "didatico e direto",
             "script": script_text,
             "beats": ["hook", "body_1", "body_2", "body_3", "cta"],
         }
@@ -786,6 +930,91 @@ class VideoProductionService:
             if text:
                 items.append(text)
         return items
+
+    def _channel_presets_dir(self) -> Path:
+        return self.settings.local_storage_path / "config" / "channel-presets"
+
+    def _channel_preset_path(self, channel_slug: str) -> Path:
+        return self._channel_presets_dir() / f"{self._normalize_channel_slug(channel_slug)}.json"
+
+    def _write_channel_preset_file(self, path: Path, preset: ChannelPresetRecord) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "channel_slug": preset.channel_slug,
+                    "channel_name": preset.channel_name,
+                    "default_topic_style": preset.default_topic_style,
+                    "default_visual_template": preset.default_visual_template,
+                    "default_asset_slug": preset.default_asset_slug,
+                    "default_cta": preset.default_cta,
+                    "target_duration_seconds": preset.target_duration_seconds,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    def _read_channel_preset_file(self, path: Path) -> ChannelPresetRecord | None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        channel_slug = self._normalize_channel_slug(str(payload.get("channel_slug") or path.stem))
+        channel_name = str(payload.get("channel_name") or "").strip()
+        if not channel_name:
+            return None
+        try:
+            default_visual_template = self._normalize_visual_template(str(payload.get("default_visual_template") or "default"))
+        except ValueError:
+            return None
+        target_duration_seconds = self._normalize_optional_duration(payload.get("target_duration_seconds"))
+        return ChannelPresetRecord(
+            channel_slug=channel_slug,
+            channel_name=channel_name,
+            default_topic_style=self._normalize_optional_text(payload.get("default_topic_style")),
+            default_visual_template=default_visual_template,
+            default_asset_slug=self._normalize_optional_text(payload.get("default_asset_slug")),
+            default_cta=self._normalize_optional_text(payload.get("default_cta")),
+            target_duration_seconds=target_duration_seconds,
+        )
+
+    def _normalize_channel_slug(self, value: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        if not slug:
+            raise ValueError("channel_slug is required")
+        return slug
+
+    def _normalize_optional_text(self, value: object | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _normalize_optional_duration(self, value: object | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            duration = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("target_duration_seconds must be a positive integer")
+        if duration <= 0:
+            raise ValueError("target_duration_seconds must be a positive integer")
+        return duration
+
+    def _normalize_visual_template(self, value: str) -> str:
+        template = value.strip().lower()
+        if template not in _CHANNEL_PRESET_ALLOWED_TEMPLATES:
+            raise ValueError("Unknown visual template. Allowed values: default, dark_overlay, big_captions")
+        return template
+
+    async def _get_asset_by_slug(self, asset_slug: str) -> AssetPool | None:
+        statement = select(AssetPool).where(AssetPool.slug == asset_slug)
+        return await self.session.scalar(statement)
 
     def _slugify(self, value: str) -> str:
         import re

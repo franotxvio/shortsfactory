@@ -301,6 +301,26 @@ async def test_fake_script_engine_does_not_instantiate_provider(db_session, monk
 
 
 @pytest.mark.asyncio
+async def test_fake_script_engine_applies_preset_defaults(db_session) -> None:
+    service = ScriptEngineService(session=db_session)
+    result = await service.create_test_script(
+        topic="Como aprender Python",
+        channel_slug="preset-channel",
+        channel_name="Preset Channel",
+        video_title="Teste com preset",
+        style_tone="educativo e caloroso",
+        default_call_to_action="CTA do preset",
+        target_duration_seconds=48,
+    )
+
+    assert result.script_status == "approved"
+    assert result.style_tone == "educativo e caloroso"
+    assert result.call_to_action == "CTA do preset"
+    assert result.estimated_duration_seconds == 48
+    assert "CTA do preset" in (result.script_text or "")
+
+
+@pytest.mark.asyncio
 async def test_real_script_engine_without_api_key_fails_clear(db_session) -> None:
     service = ScriptEngineService(session=db_session, settings=Settings(llm_provider=LLMProvider.OPENAI))
 
@@ -336,6 +356,9 @@ async def test_deepseek_provider_uses_config_and_logs_costs(db_session, monkeypa
         channel_name="DeepSeek Test",
         video_title="Teste DeepSeek",
         execution_mode=VideoExecutionMode.REAL,
+        style_tone="educativo e caloroso",
+        default_call_to_action="CTA do preset",
+        target_duration_seconds=54,
     )
 
     assert result.script_status == "approved"
@@ -346,6 +369,9 @@ async def test_deepseek_provider_uses_config_and_logs_costs(db_session, monkeypa
     }
     assert FakeAsyncOpenAI.last_chat_kwargs is not None
     assert FakeAsyncOpenAI.last_chat_kwargs["model"] == "deepseek-chat"
+    assert result.style_tone == "educativo e caloroso"
+    assert result.call_to_action == "CTA do preset"
+    assert result.estimated_duration_seconds == 54
 
     cost_log = await db_session.scalar(select(CostLog).order_by(CostLog.id.desc()))
     assert cost_log is not None

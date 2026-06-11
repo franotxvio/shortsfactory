@@ -77,6 +77,9 @@ class RenderWorker:
         await self.session.flush()
         return RenderResult(video_id=video.id, output_path=str(output_path))
 
+    def set_visual_template(self, *, video_id: int, visual_template: str) -> None:
+        self._write_visual_template(video_id=video_id, visual_template=visual_template)
+
     async def approve_preview(self, *, video_id: int) -> RenderResult:
         video = await self.session.get(Video, video_id)
         if video is None:

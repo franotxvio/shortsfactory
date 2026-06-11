@@ -66,6 +66,9 @@ def _normalize_script_payload(
     *,
     topic: str,
     hook_text: str,
+    style_tone: str | None = None,
+    default_call_to_action: str | None = None,
+    target_duration_seconds: int | None = None,
 ) -> dict[str, object]:
     title = str(payload.get("title") or f"Roteiro curto: {topic}").strip()
     hook = str(payload.get("hook") or hook_text or f"Voce ja viu {topic} por este angulo?").strip()
@@ -81,13 +84,16 @@ def _normalize_script_payload(
     body_blocks = body_blocks[:5]
 
     call_to_action = str(
-        payload.get("call_to_action")
+        default_call_to_action
+        or payload.get("call_to_action")
         or payload.get("cta")
         or "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
     ).strip()
-    style_tone = str(payload.get("style_tone") or payload.get("tone") or "didatico e direto").strip()
+    style_tone = str(style_tone or payload.get("style_tone") or payload.get("tone") or "didatico e direto").strip()
     estimated_duration_raw = payload.get("estimated_duration_seconds")
-    if isinstance(estimated_duration_raw, int) and estimated_duration_raw > 0:
+    if isinstance(target_duration_seconds, int) and target_duration_seconds > 0:
+        estimated_duration_seconds = target_duration_seconds
+    elif isinstance(estimated_duration_raw, int) and estimated_duration_raw > 0:
         estimated_duration_seconds = estimated_duration_raw
     else:
         estimated_duration_seconds = max(18, 12 + len(body_blocks) * 6)
@@ -204,6 +210,9 @@ class ScriptEngineService:
         channel_name: str,
         video_title: str | None = None,
         execution_mode: VideoExecutionMode = VideoExecutionMode.FAKE,
+        style_tone: str | None = None,
+        default_call_to_action: str | None = None,
+        target_duration_seconds: int | None = None,
     ) -> ScriptGenerationResult:
         llm_client, provider_name, record_cost_logs = self._get_llm_client(execution_mode)
         async with self.session.begin():
@@ -211,12 +220,25 @@ class ScriptEngineService:
 
             idea = await self._generate_idea(topic=topic, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
             hook = await self._generate_hook(topic=topic, idea=idea, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
-            script = await self._generate_script(topic=topic, idea=idea, hook=hook, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
+            script = await self._generate_script(
+                topic=topic,
+                idea=idea,
+                hook=hook,
+                llm_client=llm_client,
+                provider_name=provider_name,
+                record_cost_logs=record_cost_logs,
+                style_tone=style_tone,
+                default_call_to_action=default_call_to_action,
+                target_duration_seconds=target_duration_seconds,
+            )
             policy = await self._policy_check(topic=topic, script=script, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
             normalized_script = _normalize_script_payload(
                 script.content,
                 topic=topic,
                 hook_text=str(hook.content.get("hook") or ""),
+                style_tone=style_tone,
+                default_call_to_action=default_call_to_action,
+                target_duration_seconds=target_duration_seconds,
             )
 
             video_slug = f"{_slugify(topic)}-{uuid4().hex[:8]}"
@@ -336,13 +358,32 @@ class ScriptEngineService:
             record_cost_logs=record_cost_logs,
         )
 
-    async def _generate_script(self, *, topic: str, idea: LLMResult, hook: LLMResult, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
+    async def _generate_script(
+        self,
+        *,
+        topic: str,
+        idea: LLMResult,
+        hook: LLMResult,
+        llm_client: LLMJSONClient | _DeterministicLLMClient,
+        provider_name: str,
+        record_cost_logs: bool,
+        style_tone: str | None = None,
+        default_call_to_action: str | None = None,
+        target_duration_seconds: int | None = None,
+    ) -> LLMResult:
         idea_text = str(idea.content.get("idea") or "")
         hook_text = str(hook.content.get("hook") or "")
         return await self._generate_operation(
             operation="script",
             topic=topic,
-            prompt_context={"topic": topic, "idea": idea_text, "hook": hook_text},
+            prompt_context={
+                "topic": topic,
+                "idea": idea_text,
+                "hook": hook_text,
+                "style_tone": style_tone,
+                "default_call_to_action": default_call_to_action,
+                "target_duration_seconds": target_duration_seconds,
+            },
             system_prompt=(
                 "You write a complete short-form script in JSON only. "
                 "The JSON must include hook, body_blocks, call_to_action, estimated_duration_seconds, style_tone, title, script and beats."
@@ -350,6 +391,9 @@ class ScriptEngineService:
             user_prompt=(
                 f'Write a short-form video script about "{topic}". '
                 f'Idea: {idea_text!r}. Hook: {hook_text!r}. '
+                f"{f'Style tone: {style_tone!r}. ' if style_tone else ''}"
+                f"{f'Default CTA: {default_call_to_action!r}. ' if default_call_to_action else ''}"
+                f"{f'Target duration seconds: {target_duration_seconds}. ' if target_duration_seconds else ''}"
                 "Return JSON with keys title, hook, body_blocks, call_to_action, estimated_duration_seconds, style_tone, script and beats. "
                 "Use 3 to 5 short body_blocks and keep the final script concise enough for a Shorts video."
             ),

@@ -220,6 +220,20 @@ async def _create_video_with_optional_assets(
     return video
 
 
+def _build_preset_settings(tmp_path: Path) -> Settings:
+    storage_root = tmp_path / "storage"
+    return Settings(
+        local_storage_path=storage_root,
+        asset_pool_path=storage_root / "assets",
+        audio_output_path=storage_root / "audio",
+        caption_output_path=storage_root / "captions",
+        preview_output_path=storage_root / "renders" / "previews",
+        final_output_path=storage_root / "renders" / "finals",
+        whisper_model_path=storage_root / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+
+
 @pytest.mark.asyncio
 async def test_full_video_pipeline_generates_local_artifacts(db_session, tmp_path) -> None:
     await _create_approved_script(db_session)
@@ -383,6 +397,109 @@ async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_da
 
     cost_log_count = await db_session.scalar(select(func.count()).select_from(CostLog))
     assert cost_log_count == 0
+
+
+@pytest.mark.asyncio
+async def test_channel_preset_list_and_upsert_roundtrip(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    preset = await service.upsert_channel_preset(
+        channel_slug="manual-test",
+        channel_name="Manual Test",
+        default_topic_style="educativo e caloroso",
+        default_visual_template="dark_overlay",
+        default_asset_slug="preset-asset",
+        default_cta="CTA do preset",
+        target_duration_seconds=42,
+    )
+    presets = await service.list_channel_presets()
+
+    assert preset.channel_slug == "manual-test"
+    assert preset.channel_name == "Manual Test"
+    assert preset.default_topic_style == "educativo e caloroso"
+    assert preset.default_visual_template == "dark_overlay"
+    assert preset.default_asset_slug == "preset-asset"
+    assert preset.default_cta == "CTA do preset"
+    assert preset.target_duration_seconds == 42
+    assert len(presets) == 1
+    assert presets[0].channel_slug == "manual-test"
+    assert (settings.local_storage_path / "config" / "channel-presets" / "manual-test.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_local_test_video_applies_channel_preset_defaults(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    asset = AssetPool(
+        asset_type="background_image",
+        name="Preset Asset",
+        slug="preset-asset",
+        source_url="local",
+        source_path="storage/assets/manual/preset-asset.png",
+        license_name="generated-local",
+        license_url=None,
+        status=LifecycleStatus.ACTIVE,
+    )
+    db_session.add(asset)
+    await db_session.commit()
+    await db_session.refresh(asset)
+
+    await service.upsert_channel_preset(
+        channel_slug="manual-test",
+        channel_name="Manual Test",
+        default_topic_style="educativo e caloroso",
+        default_visual_template="dark_overlay",
+        default_asset_slug="preset-asset",
+        default_cta="CTA do preset",
+        target_duration_seconds=42,
+    )
+
+    result = await service.create_local_test_video(
+        topic="Como aprender Python",
+        channel_slug="manual-test",
+        channel_name="Manual Test",
+        video_title="Teste preset",
+        execution_mode=VideoExecutionMode.FAKE,
+    )
+
+    assert result.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+    assert result.target_duration_seconds == 42
+    assert result.visual_template == "dark_overlay"
+    assert result.style_tone == "educativo e caloroso"
+    assert result.call_to_action == "CTA do preset"
+    assert result.asset_id == asset.id
+    assert result.asset_slug == "preset-asset"
+    assert result.asset_path == "storage/assets/manual/preset-asset.png"
+    assert result.asset_name == "Preset Asset"
+    assert result.estimated_duration_seconds == 42
+
+    refreshed_video = await db_session.get(Video, result.video_id)
+    assert refreshed_video is not None
+    assert refreshed_video.target_duration_seconds == 42
+    assert refreshed_video.asset_id == asset.id
+
+
+@pytest.mark.asyncio
+async def test_create_local_test_video_falls_back_without_preset(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    result = await service.create_local_test_video(
+        topic="Como aprender Python",
+        channel_slug="no-preset-channel",
+        channel_name="No Preset Channel",
+        video_title="Teste sem preset",
+        execution_mode=VideoExecutionMode.FAKE,
+    )
+
+    assert result.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+    assert result.target_duration_seconds is None
+    assert result.visual_template == "default"
+    assert result.asset_id is None
+    assert result.asset_path is None
+    assert result.style_tone == "didatico e direto"
 
 
 @pytest.mark.asyncio

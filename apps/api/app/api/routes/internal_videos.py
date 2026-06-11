@@ -13,6 +13,9 @@ from app.schemas.video_production import (
     AssetListResponse,
     AssetRegisterRequest,
     AssetResponse,
+    ChannelPresetListResponse,
+    ChannelPresetResponse,
+    ChannelPresetUpsertRequest,
     VideoCreateRequest,
     VideoAssetSelectionRequest,
     VideoListResponse,
@@ -77,6 +80,10 @@ async def _with_demo_flag(
 
 def _asset_response_from_record(record) -> AssetResponse:
     return AssetResponse.model_validate(asdict(record))
+
+
+def _channel_preset_response_from_record(record) -> ChannelPresetResponse:
+    return ChannelPresetResponse.model_validate(asdict(record))
 
 
 def _resolve_storage_file_path(path_value: str) -> Path:
@@ -195,6 +202,37 @@ async def register_local_asset(
         await _rollback_if_available(service)
         _raise_http_error(error)
     return _asset_response_from_record(asset)
+
+
+@router.get("/channel-presets", response_model=ChannelPresetListResponse)
+async def list_channel_presets(
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> ChannelPresetListResponse:
+    try:
+        presets = await service.list_channel_presets()
+    except ValueError as error:
+        _raise_http_error(error)
+    return ChannelPresetListResponse(items=[_channel_preset_response_from_record(item) for item in presets])
+
+
+@router.post("/channel-presets", response_model=ChannelPresetResponse)
+async def upsert_channel_preset(
+    payload: ChannelPresetUpsertRequest,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> ChannelPresetResponse:
+    try:
+        preset = await service.upsert_channel_preset(
+            channel_slug=payload.channel_slug,
+            channel_name=payload.channel_name,
+            default_topic_style=payload.default_topic_style,
+            default_visual_template=payload.default_visual_template,
+            default_asset_slug=payload.default_asset_slug,
+            default_cta=payload.default_cta,
+            target_duration_seconds=payload.target_duration_seconds,
+        )
+    except ValueError as error:
+        _raise_http_error(error)
+    return _channel_preset_response_from_record(preset)
 
 
 @router.get("", response_model=VideoListResponse)
