@@ -25,3 +25,6 @@ storage/captions/*
 
 # Python packaging artifacts
 *.egg-info/
+
+# Local API-generated media artifacts
+apps/api/storage/
