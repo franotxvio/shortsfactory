@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.deps import get_video_production_service
 from app.schemas.video_production import (
     VideoCreateRequest,
+    VideoListResponse,
     VideoPipelineResponse,
     VideoProductionRequest,
     VideoProductionResponse,
@@ -31,6 +32,18 @@ async def _rollback_if_available(service: VideoProductionService) -> None:
     session = getattr(service, "session", None)
     if session is not None:
         await session.rollback()
+
+
+@router.get("", response_model=VideoListResponse)
+async def list_videos(
+    limit: int = 20,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> VideoListResponse:
+    try:
+        result = await service.list_recent_videos(limit=limit)
+    except ValueError as error:
+        _raise_http_error(error)
+    return VideoListResponse(items=[VideoPipelineResponse.model_validate(asdict(item)) for item in result])
 
 
 @router.post("/{video_id}/produce", response_model=VideoProductionResponse)

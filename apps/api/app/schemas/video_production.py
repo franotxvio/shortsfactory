@@ -47,3 +47,7 @@ class VideoPipelineResponse(BaseModel):
     final_path: str | None = None
     asset_path: str | None = None
     preview_approved_at: datetime | None = None
+
+
+class VideoListResponse(BaseModel):
+    items: list[VideoPipelineResponse]

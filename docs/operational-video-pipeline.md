@@ -173,3 +173,29 @@ Diferença importante:
 - O fluxo manual nao depende de Whisper real.
 - O render final continua bloqueado ate o preview ser aprovado.
 - O `script_id` e o `script_status` sao preservados nos retornos das etapas quando o video possui script associado.
+
+## 7. Dashboard local
+
+O dashboard fica em `apps/dashboard` e conversa com a API local por HTTP.
+
+Para rodar com o endereco padrao:
+
+```bash
+cd apps/dashboard
+npm run dev
+```
+
+Se quiser apontar para outra API local, defina `NEXT_PUBLIC_API_BASE_URL` antes de iniciar o app:
+
+```bash
+$env:NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8000"
+npm run dev
+```
+
+O painel permite:
+
+- listar videos recentes;
+- criar video fake;
+- produzir o pipeline fake completo;
+- atualizar o status do video selecionado;
+- visualizar `audio_path`, `caption_path`, `asset_path`, `preview_path` e `final_path`.

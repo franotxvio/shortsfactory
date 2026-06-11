@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.main import app
 from app.models.core import AssetPool, CostLog, Script, Video
 from app.models.enums import VideoExecutionMode, VideoStageStatus, WorkflowStatus
+from app.schemas.video_production import VideoListResponse
 from app.schemas.video_production import VideoPipelineResponse
 from app.schemas.video_production import VideoProductionResponse
 from app.services.llm_types import LLMResult, LLMUsage
@@ -272,6 +273,57 @@ async def test_internal_manual_video_pipeline_runs_fake_mode(db_session, temp_da
 
     cost_log_count = await db_session.scalar(select(func.count()).select_from(CostLog))
     assert cost_log_count == 0
+
+
+@pytest.mark.asyncio
+async def test_internal_video_list_returns_recent_items(db_session, temp_database_url: str) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            produce_response = client.post(
+                f"/internal/videos/{created.video_id}/produce",
+                json={"auto_approve_preview": True, "execution_mode": "fake"},
+            )
+            assert produce_response.status_code == 200
+
+            list_response = client.get("/internal/videos")
+            assert list_response.status_code == 200
+            body = VideoListResponse.model_validate(list_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert len(body.items) == 1
+    item = body.items[0]
+    assert item.video_id == created.video_id
+    assert item.stage_status == VideoStageStatus.FINAL_RENDERED.value
+    assert item.status == WorkflowStatus.COMPLETED.value
+    assert item.audio_path is not None
+    assert item.caption_path is not None
+    assert item.asset_path is not None
+    assert item.preview_path is not None
+    assert item.final_path is not None
 
 
 def test_internal_manual_video_real_mode_requires_api_key() -> None:

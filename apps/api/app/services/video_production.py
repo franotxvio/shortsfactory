@@ -93,6 +93,27 @@ class VideoProductionService:
             asset_path=asset_result.asset_path,
         )
 
+    async def list_recent_videos(self, *, limit: int = 20) -> list[VideoPipelineState]:
+        statement = (
+            select(Video)
+            .options(selectinload(Video.asset))
+            .order_by(Video.created_at.desc(), Video.id.desc())
+            .limit(max(1, min(limit, 100)))
+        )
+        videos = (await self.session.scalars(statement)).all()
+        states: list[VideoPipelineState] = []
+        for video in videos:
+            script_id, script_status = await self._get_latest_script_metadata(video_id=video.id)
+            states.append(
+                self._build_state(
+                    video,
+                    script_id=script_id,
+                    script_status=script_status,
+                    asset_path=video.asset.source_path if video.asset and video.asset.source_path else None,
+                )
+            )
+        return states
+
     async def create_local_test_video(
         self,
         *,
