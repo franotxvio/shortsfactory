@@ -339,6 +339,23 @@ def test_internal_manual_video_real_mode_requires_api_key() -> None:
     assert response.status_code == 400
 
 
+def test_internal_video_preflight_allows_local_dashboard_origin() -> None:
+    with TestClient(app) as client:
+        response = client.options(
+            "/internal/videos/test",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+    assert response.status_code in {200, 204}
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "POST" in response.headers["access-control-allow-methods"]
+    assert "content-type" in response.headers["access-control-allow-headers"].lower()
+
+
 @pytest.mark.asyncio
 async def test_fake_pipeline_does_not_instantiate_openai(db_session, tmp_path, monkeypatch) -> None:
     await _create_approved_script(db_session)

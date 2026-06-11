@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "ShortsFactory"
     app_debug: bool = True
+    cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     database_url: str = "postgresql+asyncpg://shortsfactory:shortsfactory@localhost:5433/shortsfactory"
     redis_url: str = "redis://localhost:6379/0"
@@ -49,6 +50,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def cors_allow_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
 
 @lru_cache(maxsize=1)
