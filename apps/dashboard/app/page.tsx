@@ -406,13 +406,21 @@ export default function DashboardPage() {
     }
   }
 
-  async function applyAsset(asset: AssetItem) {
+  async function applyAsset(asset: AssetItem, options?: { quiet?: boolean }) {
     if (selectedVideoId === null) {
-      setMessage({ kind: "error", text: "Selecione um video antes de escolher um asset." });
+      const error = new Error("Selecione um video antes de escolher um asset.");
+      if (options?.quiet) {
+        throw error;
+      }
+      setMessage({ kind: "error", text: error.message });
       return;
     }
     if (!canSelectAsset(selectedVideo)) {
-      setMessage({ kind: "error", text: "Asset so pode ser trocado antes do preview, depois das captions." });
+      const error = new Error("Asset so pode ser trocado antes do preview, depois das captions.");
+      if (options?.quiet) {
+        throw error;
+      }
+      setMessage({ kind: "error", text: error.message });
       return;
     }
 
@@ -425,10 +433,15 @@ export default function DashboardPage() {
         }),
       });
       mergeVideo(updated);
-      setMessage({ kind: "success", text: `Asset ${asset.name} aplicado ao video ${selectedVideoId}.` });
+      if (!options?.quiet) {
+        setMessage({ kind: "success", text: `Asset ${asset.name} aplicado ao video ${selectedVideoId}.` });
+      }
       void loadVideos({ quiet: true });
       void loadAssets({ quiet: true });
     } catch (error) {
+      if (options?.quiet) {
+        throw error;
+      }
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao aplicar asset." });
     } finally {
       setBusyAction(null);
@@ -438,7 +451,7 @@ export default function DashboardPage() {
   async function registerLocalAsset() {
     setBusyAction("register-asset");
     try {
-      await requestJson<AssetItem>(apiBaseUrl, "/internal/videos/assets/register-local", {
+      const created = await requestJson<AssetItem>(apiBaseUrl, "/internal/videos/assets/register-local", {
         method: "POST",
         body: JSON.stringify({
           file_path: assetFilePath,
@@ -452,7 +465,26 @@ export default function DashboardPage() {
         }),
       });
       await loadAssets({ quiet: true });
-      setMessage({ kind: "success", text: `Asset local cadastrado com sucesso a partir de ${assetFilePath}.` });
+      if (selectedVideoId !== null && canSelectAsset(selectedVideo)) {
+        try {
+          await applyAsset(created, { quiet: true });
+          setMessage({
+            kind: "success",
+            text: "Asset cadastrado. Asset aplicado ao vídeo atual.",
+          });
+          return;
+        } catch (error) {
+          setMessage({
+            kind: "error",
+            text:
+              error instanceof Error
+                ? `Asset cadastrado, mas não foi possível aplicar ao vídeo atual: ${error.message}`
+                : "Asset cadastrado, mas não foi possível aplicar ao vídeo atual.",
+          });
+          return;
+        }
+      }
+      setMessage({ kind: "success", text: "Asset cadastrado." });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao cadastrar asset local." });
     } finally {
