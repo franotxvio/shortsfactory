@@ -77,6 +77,46 @@ def _short_topic_label(topic: str) -> str:
     return topic_text or "o tema"
 
 
+def _looks_like_persona_topic(topic: str) -> bool:
+    normalized = _normalize_reason_tag(_short_topic_label(topic))
+    keywords = {
+        "programador",
+        "developer",
+        "dev",
+        "tester",
+        "engenheiro",
+        "engineer",
+        "iniciante",
+        "junior",
+        "senior",
+        "estudante",
+        "aprendiz",
+        "persona",
+        "pessoa",
+        "time",
+        "equipe",
+        "homem",
+        "mulher",
+    }
+    return any(keyword in normalized for keyword in keywords)
+
+
+def _persona_contrast_label(topic: str) -> str:
+    normalized = _normalize_reason_tag(_short_topic_label(topic))
+    if "tester" in normalized:
+        return "tester real"
+    if "developer" in normalized or "dev" in normalized:
+        return "dev real"
+    if "engineer" in normalized or "engenheiro" in normalized:
+        return "engineer real"
+    if "programador" in normalized:
+        return "programador real"
+    words = _short_topic_label(topic).split()
+    if words:
+        return f"{words[0]} real"
+    return "real"
+
+
 def _viral_micro_short_hook(topic: str) -> str:
     topic_label = _short_topic_label(topic)
     if len(topic_label) <= 18:
@@ -92,11 +132,39 @@ def _viral_micro_short_hook(topic: str) -> str:
 def _viral_micro_short_body_blocks(topic: str) -> list[str]:
     topic_label = _short_topic_label(topic)
     topic_lower = topic_label.lower()
-    return [
-        "voce tenta decorar tudo.",
-        "mas quem progride testa primeiro.",
-        f"menos teoria, mais {topic_lower} na pratica.",
+    if _looks_like_persona_topic(topic):
+        contrast_label = _persona_contrast_label(topic)
+        return [
+            "vou estudar tudo antes de comecar.",
+            f"{contrast_label}:",
+            "quebra tudo.",
+            "e pesquisa no Google.",
+        ]
+
+    hook_seed = int(hashlib.sha256(topic_label.encode("utf-8")).hexdigest()[:2], 16)
+    variants = [
+        [
+            "voce tenta decorar tudo.",
+            "codigo bom nao nasce decorado.",
+            "nasce testado.",
+        ],
+        [
+            "voce quer entender tudo de uma vez.",
+            "mas o atalho e testar pequeno.",
+            "e repetir ate fazer sentido.",
+        ],
+        [
+            "voce comemora quando funciona.",
+            "quem tem experiencia desconfia.",
+            "e roda de novo.",
+        ],
+        [
+            "voce le a solucao pronta.",
+            "profissional de verdade quebra o problema.",
+            "e reconstrói sozinho.",
+        ],
     ]
+    return variants[hook_seed % len(variants)]
 
 
 def _build_beats(body_blocks: list[str], call_to_action: str) -> list[str]:
@@ -156,6 +224,8 @@ def _normalize_script_payload(
         if len(hook) > 40:
             hook = _viral_micro_short_hook(topic)
         body_blocks = _coerce_string_list(payload.get("body_blocks"))
+        if _looks_like_persona_topic(topic):
+            body_blocks = _viral_micro_short_body_blocks(topic)[:4]
         if not body_blocks:
             script_text = str(payload.get("script") or "").strip()
             if script_text:

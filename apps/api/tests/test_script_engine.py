@@ -338,10 +338,11 @@ async def test_fake_script_engine_supports_viral_micro_short_mode(db_session) ->
     assert result.estimated_duration_seconds <= 15
     assert result.body_blocks is not None
     assert len(result.body_blocks) <= 5
-    assert len(result.body_blocks) == 3
+    assert len(result.body_blocks) == 4
     assert result.hook is not None and len(result.hook) <= 40 and result.hook.endswith(":")
     assert result.call_to_action in {None, "", " "}
-    assert "menos teoria" in (result.script_text or "")
+    assert "na pratica" not in (result.script_text or "")
+    assert "quebra tudo" in (result.script_text or "")
 
 
 @pytest.mark.asyncio

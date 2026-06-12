@@ -611,9 +611,10 @@ async def test_create_local_test_video_supports_viral_micro_short_mode(db_sessio
     assert result.estimated_duration_seconds is not None
     assert result.estimated_duration_seconds <= 15
     assert result.body_blocks is not None
-    assert len(result.body_blocks) == 3
+    assert len(result.body_blocks) == 4
     assert result.call_to_action == ""
     assert result.hook is not None and len(result.hook) <= 40 and result.hook.endswith(":")
+    assert "na pratica" not in (result.script_text or "")
 
 
 @pytest.mark.asyncio
