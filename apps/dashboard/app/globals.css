@@ -434,12 +434,45 @@ textarea:focus {
 
 .detail-grid {
   display: grid;
-  gap: 18px;
+  gap: 22px;
+}
+
+.detail-section {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(2, 6, 23, 0.18);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.section-header h3 {
+  margin: 2px 0 0;
+  font-size: 1.05rem;
+}
+
+.section-kicker {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.76rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.section-header .panel-hint {
+  text-align: right;
 }
 
 .detail-summary {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   color: var(--muted);
 }
 
@@ -469,6 +502,13 @@ textarea:focus {
 .script-editor {
   display: grid;
   gap: 12px;
+}
+
+.detail-section .script-editor,
+.detail-section .stage-steps {
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 
 .script-editor h3 {
@@ -513,6 +553,10 @@ textarea:focus {
 .asset-panel {
   display: grid;
   gap: 12px;
+}
+
+.asset-panel .panel-header {
+  margin-bottom: 0;
 }
 
 .asset-form {

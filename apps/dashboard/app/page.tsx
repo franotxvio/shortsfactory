@@ -1430,7 +1430,7 @@ export default function DashboardPage() {
       <section className="grid">
         <aside className="panel">
           <div className="panel-header">
-            <h2>Criar video fake</h2>
+            <h2>1. Criar vídeo</h2>
             <span className="panel-hint">execution_mode = fake</span>
           </div>
 
@@ -1465,7 +1465,7 @@ export default function DashboardPage() {
           </button>
 
           <div className="panel-header spaced">
-            <h2>Presets do canal</h2>
+            <h2>2. Preset do canal</h2>
             <span className="panel-hint">{channelPresets.length} itens salvos</span>
           </div>
           {presetNotice ? <div className="preset-notice success">{presetNotice}</div> : null}
@@ -1540,7 +1540,7 @@ export default function DashboardPage() {
           </div>
 
           <div className="panel-header spaced">
-            <h2>Pipeline fake</h2>
+            <h2>5. Pipeline</h2>
             <span className="panel-hint">video selecionado</span>
           </div>
           <button
@@ -1641,66 +1641,650 @@ export default function DashboardPage() {
 
       <section className="panel detail-panel">
         <div className="panel-header">
-          <h2>Detalhes do video selecionado</h2>
+          <h2>3. Vídeo selecionado</h2>
           <span className="panel-hint">{selectedVideo ? `Video #${selectedVideo.video_id}` : "Nenhum selecionado"}</span>
         </div>
 
         {selectedVideo ? (
           <div className="detail-grid">
-            <div className="detail-summary">
-              <div className="badges">
-                <span className="badge">{selectedVideo.status}</span>
-                <span className="badge accent">{selectedVideo.stage_status}</span>
-                {selectedVideo.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
-              </div>
-              {selectedVideo.channel_slug ? (
-                <p>
-                  <strong>Canal:</strong> {selectedVideo.channel_slug}
-                </p>
-              ) : null}
-              {selectedVideo.video_title ? (
-                <p>
-                  <strong>Titulo sugerido:</strong> {selectedVideo.video_title}
-                </p>
-              ) : null}
-              <p>
-                <strong>Script:</strong> {selectedVideo.script_id ?? "pendente"} / {selectedVideo.script_status ?? "pendente"}
-              </p>
-              {selectedVideo.hook ? (
-                <p>
-                  <strong>Hook:</strong> {selectedVideo.hook}
-                </p>
-              ) : null}
-              {selectedVideo.body_blocks?.length ? (
-                <div className="detail-blocks">
-                  <strong>Body:</strong>
-                  <ul>
-                    {selectedVideo.body_blocks.map((block, index) => (
-                      <li key={`${selectedVideo.video_id}-block-${index}`}>{block}</li>
-                    ))}
-                  </ul>
+            <section className="detail-section">
+              <div className="section-header">
+                <div>
+                  <p className="section-kicker">3</p>
+                  <h3>Vídeo selecionado</h3>
                 </div>
-              ) : null}
-              {selectedVideo.call_to_action ? (
+                <span className="panel-hint">status, script, assets e paths</span>
+              </div>
+              <div className="detail-summary">
+                <div className="badges">
+                  <span className="badge">{selectedVideo.status}</span>
+                  <span className="badge accent">{selectedVideo.stage_status}</span>
+                  {selectedVideo.is_demo ? <span className="badge demo">DEMO / LOCAL</span> : null}
+                </div>
+                {selectedVideo.channel_slug ? (
+                  <p>
+                    <strong>Canal:</strong> {selectedVideo.channel_slug}
+                  </p>
+                ) : null}
+                {selectedVideo.video_title ? (
+                  <p>
+                    <strong>Titulo sugerido:</strong> {selectedVideo.video_title}
+                  </p>
+                ) : null}
                 <p>
-                  <strong>CTA:</strong> {selectedVideo.call_to_action}
+                  <strong>Script:</strong> {selectedVideo.script_id ?? "pendente"} / {selectedVideo.script_status ?? "pendente"}
                 </p>
-              ) : null}
-              {selectedVideo.estimated_duration_seconds ? (
+                {selectedVideo.hook ? (
+                  <p>
+                    <strong>Hook:</strong> {selectedVideo.hook}
+                  </p>
+                ) : null}
+                {selectedVideo.body_blocks?.length ? (
+                  <div className="detail-blocks">
+                    <strong>Body:</strong>
+                    <ul>
+                      {selectedVideo.body_blocks.map((block, index) => (
+                        <li key={`${selectedVideo.video_id}-block-${index}`}>{block}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {selectedVideo.call_to_action ? (
+                  <p>
+                    <strong>CTA:</strong> {selectedVideo.call_to_action}
+                  </p>
+                ) : null}
+                {selectedVideo.estimated_duration_seconds ? (
+                  <p>
+                    <strong>Duracao estimada:</strong> {selectedVideo.estimated_duration_seconds}s
+                  </p>
+                ) : null}
+                {selectedVideo.target_duration_seconds ? (
+                  <p>
+                    <strong>Duracao alvo:</strong> {selectedVideo.target_duration_seconds}s
+                  </p>
+                ) : null}
+                {selectedVideo.style_tone ? (
+                  <p>
+                    <strong>Tom:</strong> {selectedVideo.style_tone}
+                  </p>
+                ) : null}
                 <p>
-                  <strong>Duracao estimada:</strong> {selectedVideo.estimated_duration_seconds}s
+                  <strong>Template visual atual:</strong> {selectedVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE}
                 </p>
-              ) : null}
-              {selectedVideo.target_duration_seconds ? (
+                {previewNeedsRefresh ? (
+                  <p>
+                    <strong>Template selecionado:</strong> {selectedVisualTemplate}
+                  </p>
+                ) : null}
                 <p>
-                  <strong>Duracao alvo:</strong> {selectedVideo.target_duration_seconds}s
+                  <strong>Asset:</strong> {selectedVideo.asset_id ?? "pendente"}
                 </p>
-              ) : null}
-              {selectedVideo.style_tone ? (
-                <p>
-                  <strong>Tom:</strong> {selectedVideo.style_tone}
+                {pendingAssetId !== null ? (
+                  <p>
+                    <strong>Asset selecionado para regenerar:</strong>{" "}
+                    {assets.find((asset) => asset.asset_id === pendingAssetId)?.name ?? `#${pendingAssetId}`}
+                  </p>
+                ) : null}
+                {selectedVideo.asset_name || selectedVideo.asset_slug || selectedVideo.asset_type ? (
+                  <div className="detail-asset">
+                    <p>
+                      <strong>Asset atual:</strong> {selectedVideo.asset_name ?? selectedVideo.asset_slug ?? "sem nome"}
+                    </p>
+                    <p>
+                      <strong>Slug:</strong> {selectedVideo.asset_slug ?? "pendente"}
+                    </p>
+                    <p>
+                      <strong>Tipo:</strong> {selectedVideo.asset_type ?? "pendente"}
+                    </p>
+                    <p>
+                      <strong>Grupo:</strong>{" "}
+                      {selectedVideo.asset_channel_slug ?? selectedVideo.channel_slug ?? "sem canal"}
+                    </p>
+                    <p>
+                      <strong>Tema:</strong> {selectedVideo.asset_topic ?? "pendente"}
+                    </p>
+                    <AssetTags tags={selectedVideo.asset_tags} />
+                  </div>
+                ) : null}
+                <FileLinks apiBaseUrl={apiBaseUrl} video={selectedVideo} />
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <div className="section-header">
+                <div>
+                  <p className="section-kicker">4</p>
+                  <h3>Roteiro</h3>
+                </div>
+                <span className="panel-hint">{scriptEditable ? "Editavel antes do TTS" : "Bloqueado apos script aprovado"}</span>
+              </div>
+              <div className="script-editor">
+                <textarea
+                  value={scriptDraft}
+                  onChange={(event) => setScriptDraft(event.target.value)}
+                  disabled={!scriptEditable}
+                  placeholder="O roteiro consolidado aparece aqui antes do TTS."
+                  rows={10}
+                />
+                <div className="script-editor-actions">
+                  <button type="button" className="primary secondary" onClick={saveScriptDraft} disabled={!scriptEditable || busyAction !== null}>
+                    {busyAction === "save-script" ? "Salvando..." : "Salvar roteiro"}
+                  </button>
+                  {!scriptEditable ? <p className="helper">A edicao fica liberada somente enquanto o video estiver em script_approved.</p> : null}
+                </div>
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <div className="section-header">
+                <div>
+                  <p className="section-kicker">5</p>
+                  <h3>Pipeline</h3>
+                </div>
+                <span className="panel-hint">stage atual: {selectedVideo.stage_status}</span>
+              </div>
+              <div className="stage-steps">
+                <div className="template-picker">
+                  <label className="field">
+                    <span>Template visual</span>
+                    <select
+                      value={selectedVisualTemplate}
+                      onChange={(event) => setSelectedVisualTemplate(event.target.value)}
+                      disabled={!canChangeTemplate(selectedVideo) || busyAction !== null}
+                    >
+                      <option value="default">default</option>
+                      <option value="dark_overlay">dark_overlay</option>
+                      <option value="big_captions">big_captions</option>
+                    </select>
+                  </label>
+                  <p className="helper">
+                    O template altera apenas preview/final. Depois do final render, a troca fica bloqueada.
+                  </p>
+                  {previewNeedsRefresh ? (
+                    <p className="warning">
+                      Ha mudancas visuais pendentes. Regenerar preview para aplicar o asset/template selecionado.
+                    </p>
+                  ) : null}
+                </div>
+                <div className="stage-step-grid">
+                  <button
+                    type="button"
+                    onClick={() => void runPipelineStep("tts")}
+                    disabled={busyAction !== null || !canRunStep(selectedVideo, "script_approved")}
+                  >
+                    {busyAction === "tts" ? "Gerando..." : "Gerar TTS"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runPipelineStep("captions")}
+                    disabled={busyAction !== null || !canRunStep(selectedVideo, "tts_done")}
+                  >
+                    {busyAction === "captions" ? "Gerando..." : "Gerar captions"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runPipelineStep("asset")}
+                    disabled={busyAction !== null || !canSelectAsset(selectedVideo)}
+                  >
+                    {busyAction === "asset" ? "Selecionando..." : "Selecionar asset"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runPipelineStep("preview")}
+                    disabled={busyAction !== null || !canRunStep(selectedVideo, "asset_ready")}
+                  >
+                    {busyAction === "preview" ? "Gerando..." : "Gerar preview"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void regeneratePreview()}
+                    disabled={busyAction !== null || !canRegeneratePreview(selectedVideo) || !selectedVideo?.preview_path}
+                  >
+                    {busyAction === "regenerate-preview" ? "Regenerando..." : "Regenerar preview"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runPipelineStep("approve-preview")}
+                    disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_ready") || previewNeedsRefresh}
+                  >
+                    {busyAction === "approve-preview" ? "Aprovando..." : "Aprovar preview"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runPipelineStep("final")}
+                    disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_approved") || previewNeedsRefresh}
+                  >
+                    {busyAction === "final" ? "Renderizando..." : "Render final"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void generateExportPackage()}
+                    disabled={busyAction !== null || !exportPackageReady}
+                  >
+                    {busyAction === "export-package" ? "Gerando export..." : "Gerar pacote de export"}
+                  </button>
+                </div>
+                <p className="helper">
+                  Cada botao segue a ordem real do pipeline. Se o stage atual nao permitir a etapa, a API responde com erro claro.
                 </p>
-              ) : null}
+                {exportPackageReady ? (
+                  <p className="helper">Depois do render final, voce pode gerar o pacote local com metadata e arquivos exportados.</p>
+                ) : null}
+              </div>
+              <div className={`job-card${latestJob?.status === "failed" ? " failed" : ""}`}>
+                <div className="panel-header">
+                  <h3>Job em background</h3>
+                  <div className="panel-actions">
+                    <span className="panel-hint">{latestJob ? latestJob.job_id : "nenhum job"}</span>
+                    <button type="button" className="ghost" onClick={() => void refreshLatestJob()} disabled={busyAction !== null}>
+                      Atualizar job
+                    </button>
+                  </div>
+                </div>
+                {latestJob ? (
+                  <div className="detail-asset">
+                    <p>
+                      <strong>Tipo:</strong> {latestJob.job_type}
+                    </p>
+                    <p>
+                      <strong>Status:</strong> {latestJob.status}
+                    </p>
+                    <p>
+                      <strong>Criado em:</strong> {formatJobTimestamp(latestJob.created_at)}
+                    </p>
+                    <p>
+                      <strong>Iniciado em:</strong> {formatJobTimestamp(latestJob.started_at)}
+                    </p>
+                    <p>
+                      <strong>Finalizado em:</strong> {formatJobTimestamp(latestJob.finished_at)}
+                    </p>
+                    {latestJob.visual_template ? (
+                      <p>
+                        <strong>Template:</strong> {latestJob.visual_template}
+                      </p>
+                    ) : null}
+                    {latestJob.error_message ? (
+                      <p className="warning">
+                        <strong>Erro:</strong> {latestJob.error_message}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="helper">Nenhum job enfileirado para este video ainda.</p>
+                )}
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <div className="section-header">
+                <div>
+                  <p className="section-kicker">6</p>
+                  <h3>Assets</h3>
+                </div>
+                <span className="panel-hint">usar asset local antes do preview</span>
+              </div>
+              <div className="panel asset-panel">
+                <div className="panel-header">
+                  <h3>Assets locais</h3>
+                  <div className="panel-actions">
+                    <span className="panel-hint">{assets.length} itens</span>
+                    <button type="button" className="ghost" onClick={() => void loadAssets()} disabled={busyAction !== null}>
+                      Recarregar
+                    </button>
+                  </div>
+                </div>
+                <p className="helper">
+                  Use um asset local antes do preview. O fallback padrao continua disponivel se nada for escolhido.
+                </p>
+                {previewNeedsRefresh ? (
+                  <p className="warning">
+                    O asset ou template atual foi alterado. Use {'"'}Regenerar preview{'"'} para atualizar o video selecionado.
+                  </p>
+                ) : null}
+                <div className="asset-upload-form">
+                  <div className="panel-header">
+                    <h3>Upload local</h3>
+                    <span className="panel-hint">png / jpg / jpeg / webp</span>
+                  </div>
+                  <div className="asset-form-grid">
+                    <label className="field asset-form-tags">
+                      <span>Arquivo</span>
+                      <input
+                        type="file"
+                        accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                        onChange={(event) => handleAssetUploadFileChange(event.target.files?.[0] ?? null)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Nome</span>
+                      <input value={assetUploadName} onChange={(event) => setAssetUploadName(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Slug</span>
+                      <input value={assetUploadSlug} onChange={(event) => setAssetUploadSlug(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Licença</span>
+                      <input value={assetUploadLicenseName} onChange={(event) => setAssetUploadLicenseName(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Channel slug opcional</span>
+                      <input
+                        value={assetUploadChannelSlug}
+                        onChange={(event) => setAssetUploadChannelSlug(event.target.value)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Tema/nicho opcional</span>
+                      <input value={assetUploadTopic} onChange={(event) => setAssetUploadTopic(event.target.value)} />
+                    </label>
+                    <label className="field asset-form-tags">
+                      <span>Tags opcional</span>
+                      <input value={assetUploadTagsText} onChange={(event) => setAssetUploadTagsText(event.target.value)} />
+                    </label>
+                  </div>
+                  <div className="asset-form-actions">
+                    <span className="panel-hint">
+                      Destino seguro: <code>storage/assets/uploads</code>. .mp4 continua bloqueado.
+                    </span>
+                    <button type="button" className="primary secondary" onClick={() => void uploadLocalAsset()} disabled={busyAction !== null}>
+                      {busyAction === "upload-asset" ? "Enviando..." : "Enviar arquivo"}
+                    </button>
+                  </div>
+                  {assetUploadFile ? <p className="helper">Arquivo selecionado: {assetUploadFile.name}</p> : null}
+                </div>
+                <div className="asset-form">
+                  <div className="panel-header">
+                    <h3>Cadastro local por caminho</h3>
+                    <span className="panel-hint">reaproveita um arquivo já existente em storage/assets</span>
+                  </div>
+                  <div className="asset-form-grid">
+                    <label className="field">
+                      <span>File path</span>
+                      <input value={assetFilePath} onChange={(event) => setAssetFilePath(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Nome</span>
+                      <input value={assetName} onChange={(event) => setAssetName(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Slug</span>
+                      <input value={assetSlug} onChange={(event) => setAssetSlug(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Licenca</span>
+                      <input value={assetLicenseName} onChange={(event) => setAssetLicenseName(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Channel slug opcional</span>
+                      <input value={assetChannelSlug} onChange={(event) => setAssetChannelSlug(event.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Tema/nicho opcional</span>
+                      <input value={assetTopic} onChange={(event) => setAssetTopic(event.target.value)} />
+                    </label>
+                    <label className="field asset-form-tags">
+                      <span>Tags opcional</span>
+                      <input value={assetTagsText} onChange={(event) => setAssetTagsText(event.target.value)} />
+                    </label>
+                  </div>
+                  <div className="asset-form-actions">
+                    <span className="panel-hint">asset_type: background_image</span>
+                    <button type="button" className="primary secondary" onClick={() => void registerLocalAsset()} disabled={busyAction !== null}>
+                      {busyAction === "register-asset" ? "Cadastrando..." : "Cadastrar asset"}
+                    </button>
+                  </div>
+                  <p className="helper">
+                    Exemplo pronto para a UI: <code>storage/assets/manual/python-bg.png</code>. Arquivos .mp4 ainda sao bloqueados.
+                  </p>
+                </div>
+                <div className="asset-list">
+                  {assets.length === 0 ? (
+                    <div className="empty-state">Nenhum asset local cadastrado. O fallback padrao sera usado.</div>
+                  ) : (
+                    assets.map((asset) => {
+                      const isSelected = selectedVideo?.asset_id === asset.asset_id;
+                      const isPending = pendingAssetId === asset.asset_id;
+                      const isBusy = busyAction === `asset-${asset.asset_id}`;
+                      const canUse = canSelectAsset(selectedVideo) || canRegeneratePreview(selectedVideo);
+                      return (
+                        <article
+                          key={asset.asset_id}
+                          className={`asset-card${isSelected ? " selected" : ""}${isPending ? " pending" : ""}`}
+                        >
+                          <div className="video-card-top">
+                            <div>
+                              <p className="video-id">Asset #{asset.asset_id}</p>
+                              <h3>{asset.name}</h3>
+                            </div>
+                            <div className="badges">
+                              <span className="badge">{asset.asset_type}</span>
+                              {asset.is_default ? <span className="badge demo">DEFAULT</span> : null}
+                            </div>
+                          </div>
+                          <p className="helper">Slug: {asset.slug}</p>
+                          <p className="helper">Arquivo: {asset.source_path ?? "sem caminho"}</p>
+                          <p className="helper">Licenca: {asset.license_name}</p>
+                          {asset.channel_slug ? <p className="helper">Canal: {asset.channel_slug}</p> : null}
+                          {asset.topic ? <p className="helper">Tema: {asset.topic}</p> : null}
+                          <AssetTags tags={asset.tags} />
+                          <div className="asset-actions">
+                            <button
+                              type="button"
+                              className="primary secondary"
+                              onClick={() => void applyAsset(asset)}
+                              disabled={!canUse || busyAction !== null || (isSelected && !isPending)}
+                            >
+                              {isBusy
+                                ? "Aplicando..."
+                                : isPending
+                                  ? "Selecionado para regenerar"
+                                  : isSelected
+                                    ? "Asset atual"
+                                    : canSelectAsset(selectedVideo)
+                                      ? "Usar este asset"
+                                      : "Selecionar para regenerar"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <div className="section-header">
+                <div>
+                  <p className="section-kicker">7</p>
+                  <h3>Export / YouTube Prep / Readiness</h3>
+                </div>
+                <span className="panel-hint">export package, auth e checklist</span>
+              </div>
+              <div className="asset-form">
+                <div className="panel-header">
+                  <h3>YouTube Auth</h3>
+                  <div className="badges">
+                    <span className={`badge ${youtubeAuthStatus?.enabled ? "success" : "warning"}`}>
+                      {youtubeAuthStatus?.enabled ? "enabled" : "disabled"}
+                    </span>
+                    <span className={`badge ${youtubeAuthStatus?.ready_for_upload ? "success" : "subtle"}`}>
+                      {youtubeAuthStatus?.ready_for_upload ? "ready_for_upload" : "not_ready"}
+                    </span>
+                  </div>
+                </div>
+                <p className="helper">
+                  Upload ainda nao esta habilitado. Esta area so prepara a autenticacao local de forma segura.
+                </p>
+                <button
+                  type="button"
+                  className="primary secondary"
+                  onClick={() => void simulateYoutubeUpload()}
+                  disabled={busyAction !== null || selectedVideo === null}
+                >
+                  {busyAction === "youtube-upload" ? "Simulando..." : "Simular upload YouTube"}
+                </button>
+                {youtubeAuthStatus ? (
+                  <div className="detail-asset">
+                    <p>
+                      <strong>Client secrets:</strong>{" "}
+                      {youtubeAuthStatus.client_secrets_configured ? "configurado" : "ausente"}
+                    </p>
+                    <p>
+                      <strong>Token local:</strong> {youtubeAuthStatus.token_configured ? "configurado" : "ausente"}
+                    </p>
+                    <p>
+                      <strong>Pronto para upload:</strong> {youtubeAuthStatus.ready_for_upload ? "sim" : "nao"}
+                    </p>
+                    {youtubeAuthStatus.warnings.length > 0 ? (
+                      <div className="badge-row">
+                        {youtubeAuthStatus.warnings.map((warning) => (
+                          <span key={warning} className="badge warning">
+                            {warning}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="helper">Nenhum aviso de configuracao no momento.</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="helper">Status indisponivel ate a API responder ou a pagina ser atualizada.</p>
+                )}
+                {youtubeUploadResult ? (
+                  <div className="detail-asset">
+                    <p>
+                      <strong>Upload status:</strong> {youtubeUploadResult.upload_status}
+                    </p>
+                    <p>
+                      <strong>Mensagem:</strong> {youtubeUploadResult.message}
+                    </p>
+                    <p>
+                      <strong>Video YouTube:</strong> {youtubeUploadResult.youtube_video_id ?? "null"}
+                    </p>
+                    <p>
+                      <strong>Checked at:</strong> {youtubeUploadResult.checked_at}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="asset-form">
+                <div className="panel-header">
+                  <h3>YouTube Prep</h3>
+                  <span className="panel-hint">{youtubePrepReady ? "pronto para salvar" : "aguardando final render"}</span>
+                </div>
+                <div className="asset-form-grid">
+                  <label className="field asset-form-tags">
+                    <span>Title</span>
+                    <input value={youtubeTitle} onChange={(event) => setYoutubeTitle(event.target.value)} disabled={!youtubePrepReady || busyAction !== null} />
+                  </label>
+                  <label className="field">
+                    <span>Visibility</span>
+                    <select value={youtubeVisibility} onChange={(event) => setYoutubeVisibility(event.target.value)} disabled={!youtubePrepReady || busyAction !== null}>
+                      <option value="private">private</option>
+                      <option value="unlisted">unlisted</option>
+                      <option value="public">public</option>
+                    </select>
+                  </label>
+                  <label className="field asset-form-tags">
+                    <span>Description</span>
+                    <textarea
+                      value={youtubeDescription}
+                      onChange={(event) => setYoutubeDescription(event.target.value)}
+                      disabled={!youtubePrepReady || busyAction !== null}
+                      rows={8}
+                    />
+                  </label>
+                  <label className="field asset-form-tags">
+                    <span>Tags</span>
+                    <input value={youtubeTagsText} onChange={(event) => setYoutubeTagsText(event.target.value)} disabled={!youtubePrepReady || busyAction !== null} />
+                  </label>
+                </div>
+                <div className="asset-form-actions">
+                  <span className="panel-hint">made_for_kids: false por padrao</span>
+                  <button type="button" className="primary secondary" onClick={() => void saveYouTubePrep()} disabled={!youtubePrepReady || busyAction !== null}>
+                    {busyAction === "youtube-prep" ? "Salvando..." : "Salvar YouTube Prep"}
+                  </button>
+                </div>
+                {selectedVideo.youtube_publish_path ? (
+                  <p className="helper">
+                    JSON salvo em <code>{selectedVideo.youtube_publish_path}</code>.
+                  </p>
+                ) : (
+                  <p className="helper">Salve o JSON local depois do render final para preparar a publicacao manualmente.</p>
+                )}
+              </div>
+
+              <div className="asset-form">
+                <div className="panel-header">
+                  <h3>Pronto para publicar?</h3>
+                  <div className="badges">
+                    <span className={`badge ${publishReady ? "success" : "warning"}`}>
+                      {publishReady ? "ready" : "missing_items"}
+                    </span>
+                    <span className="panel-hint">{publishReadiness?.stage_status ?? "aguardando final render"}</span>
+                  </div>
+                </div>
+                {selectedVideo?.stage_status !== "final_rendered" ? (
+                  <p className="helper">O checklist so fica disponivel depois do render final e do pacote de export.</p>
+                ) : null}
+                {publishReadiness ? (
+                  <div className="detail-asset">
+                    <p>
+                      <strong>Status geral:</strong> {publishReadiness.overall_status}
+                    </p>
+                    <p>
+                      <strong>Itens faltando:</strong>{" "}
+                      {publishReadiness.missing_items.length ? publishReadiness.missing_items.join(", ") : "nenhum"}
+                    </p>
+                    <div className="badge-row">
+                      {publishReadiness.items.map((item) => (
+                        <span key={item.key} className={`badge ${item.ready ? "success" : "warning"}`}>
+                          {item.ready ? "OK" : "pendente"}: {item.label}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="paths">
+                      {publishReadiness.items.map((item) => (
+                        <div key={item.key} className="path-row">
+                          <span className="path-label">{item.label}</span>
+                          <code className={`path-value${item.ready ? "" : " is-empty"}`}>
+                            {item.value ?? (item.ready ? "ok" : "pendente")}
+                          </code>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="helper">Abra um video finalizado para ver o checklist de publicacao.</p>
+                )}
+              </div>
+
+              <div className="paths">
+                <PathLine label="audio_path" value={selectedVideo.audio_path} />
+                <PathLine label="caption_path" value={selectedVideo.caption_path} />
+                <PathLine label="asset_path" value={selectedVideo.asset_path} />
+                <PathLine label="preview_path" value={selectedVideo.preview_path} />
+                <PathLine label="final_path" value={selectedVideo.final_path} />
+                <PathLine label="export_metadata_path" value={selectedVideo.export_metadata_path} />
+                <PathLine label="export_final_path" value={selectedVideo.export_final_path} />
+                <PathLine label="export_caption_path" value={selectedVideo.export_caption_path} />
+                <PathLine label="export_preview_path" value={selectedVideo.export_preview_path} />
+                <PathLine label="youtube_publish_path" value={selectedVideo.youtube_publish_path} />
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <div className="section-header">
+                <div>
+                  <p className="section-kicker">8</p>
+                  <h3>ContentBrain</h3>
+                </div>
+                <span className="panel-hint">sinais usados e anotacoes locais</span>
+              </div>
               <div className="detail-asset">
                 <div className="panel-header">
                   <h3>ContentBrain aplicado</h3>
@@ -1767,362 +2351,7 @@ export default function DashboardPage() {
                   </button>
                 </div>
               </div>
-              <p>
-                <strong>Template visual atual:</strong> {selectedVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE}
-              </p>
-              {previewNeedsRefresh ? (
-                <p>
-                  <strong>Template selecionado:</strong> {selectedVisualTemplate}
-                </p>
-              ) : null}
-              <p>
-                <strong>Asset:</strong> {selectedVideo.asset_id ?? "pendente"}
-              </p>
-              {pendingAssetId !== null ? (
-                <p>
-                  <strong>Asset selecionado para regenerar:</strong>{" "}
-                  {assets.find((asset) => asset.asset_id === pendingAssetId)?.name ?? `#${pendingAssetId}`}
-                </p>
-              ) : null}
-              {selectedVideo.asset_name || selectedVideo.asset_slug || selectedVideo.asset_type ? (
-                <div className="detail-asset">
-                  <p>
-                    <strong>Asset atual:</strong> {selectedVideo.asset_name ?? selectedVideo.asset_slug ?? "sem nome"}
-                  </p>
-                  <p>
-                    <strong>Slug:</strong> {selectedVideo.asset_slug ?? "pendente"}
-                  </p>
-                  <p>
-                    <strong>Tipo:</strong> {selectedVideo.asset_type ?? "pendente"}
-                  </p>
-                  <p>
-                    <strong>Grupo:</strong>{" "}
-                    {selectedVideo.asset_channel_slug ?? selectedVideo.channel_slug ?? "sem canal"}
-                  </p>
-                  <p>
-                    <strong>Tema:</strong> {selectedVideo.asset_topic ?? "pendente"}
-                  </p>
-                  <AssetTags tags={selectedVideo.asset_tags} />
-                </div>
-              ) : null}
-              <div className={`job-card${latestJob?.status === "failed" ? " failed" : ""}`}>
-                <div className="panel-header">
-                  <h3>Job em background</h3>
-                  <div className="panel-actions">
-                    <span className="panel-hint">{latestJob ? latestJob.job_id : "nenhum job"}</span>
-                    <button type="button" className="ghost" onClick={() => void refreshLatestJob()} disabled={busyAction !== null}>
-                      Atualizar job
-                    </button>
-                  </div>
-                </div>
-                {latestJob ? (
-                  <div className="detail-asset">
-                    <p>
-                      <strong>Tipo:</strong> {latestJob.job_type}
-                    </p>
-                    <p>
-                      <strong>Status:</strong> {latestJob.status}
-                    </p>
-                    <p>
-                      <strong>Criado em:</strong> {formatJobTimestamp(latestJob.created_at)}
-                    </p>
-                    <p>
-                      <strong>Iniciado em:</strong> {formatJobTimestamp(latestJob.started_at)}
-                    </p>
-                    <p>
-                      <strong>Finalizado em:</strong> {formatJobTimestamp(latestJob.finished_at)}
-                    </p>
-                    {latestJob.visual_template ? (
-                      <p>
-                        <strong>Template:</strong> {latestJob.visual_template}
-                      </p>
-                    ) : null}
-                    {latestJob.error_message ? (
-                      <p className="warning">
-                        <strong>Erro:</strong> {latestJob.error_message}
-                      </p>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="helper">Nenhum job enfileirado para este video ainda.</p>
-                )}
-              </div>
-            </div>
-
-            <div className="script-editor">
-              <div className="panel-header">
-                <h3>Roteiro consolidado</h3>
-                <span className="panel-hint">
-                  {scriptEditable ? "Editavel antes do TTS" : "Bloqueado apos script aprovado"}
-                </span>
-              </div>
-              <textarea
-                value={scriptDraft}
-                onChange={(event) => setScriptDraft(event.target.value)}
-                disabled={!scriptEditable}
-                placeholder="O roteiro consolidado aparece aqui antes do TTS."
-                rows={10}
-              />
-              <div className="script-editor-actions">
-                <button type="button" className="primary secondary" onClick={saveScriptDraft} disabled={!scriptEditable || busyAction !== null}>
-                  {busyAction === "save-script" ? "Salvando..." : "Salvar roteiro"}
-                </button>
-                {!scriptEditable ? <p className="helper">A edicao fica liberada somente enquanto o video estiver em script_approved.</p> : null}
-              </div>
-            </div>
-
-            <div className="stage-steps">
-              <div className="panel-header">
-                <h3>Controle por etapa</h3>
-                <span className="panel-hint">stage atual: {selectedVideo.stage_status}</span>
-              </div>
-              <div className="template-picker">
-                <label className="field">
-                  <span>Template visual</span>
-                  <select
-                    value={selectedVisualTemplate}
-                    onChange={(event) => setSelectedVisualTemplate(event.target.value)}
-                    disabled={!canChangeTemplate(selectedVideo) || busyAction !== null}
-                  >
-                    <option value="default">default</option>
-                    <option value="dark_overlay">dark_overlay</option>
-                    <option value="big_captions">big_captions</option>
-                  </select>
-                </label>
-                <p className="helper">
-                  O template altera apenas preview/final. Depois do final render, a troca fica bloqueada.
-                </p>
-                {previewNeedsRefresh ? (
-                  <p className="warning">
-                    Ha mudancas visuais pendentes. Regenerar preview para aplicar o asset/template selecionado.
-                  </p>
-                ) : null}
-              </div>
-              <div className="stage-step-grid">
-                <button
-                  type="button"
-                  onClick={() => void runPipelineStep("tts")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "script_approved")}
-                >
-                  {busyAction === "tts" ? "Gerando..." : "Gerar TTS"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runPipelineStep("captions")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "tts_done")}
-                >
-                  {busyAction === "captions" ? "Gerando..." : "Gerar captions"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runPipelineStep("asset")}
-                  disabled={busyAction !== null || !canSelectAsset(selectedVideo)}
-                >
-                  {busyAction === "asset" ? "Selecionando..." : "Selecionar asset"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runPipelineStep("preview")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "asset_ready")}
-                >
-                  {busyAction === "preview" ? "Gerando..." : "Gerar preview"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void regeneratePreview()}
-                  disabled={busyAction !== null || !canRegeneratePreview(selectedVideo) || !selectedVideo?.preview_path}
-                >
-                  {busyAction === "regenerate-preview" ? "Regenerando..." : "Regenerar preview"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runPipelineStep("approve-preview")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_ready") || previewNeedsRefresh}
-                >
-                  {busyAction === "approve-preview" ? "Aprovando..." : "Aprovar preview"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runPipelineStep("final")}
-                  disabled={busyAction !== null || !canRunStep(selectedVideo, "preview_approved") || previewNeedsRefresh}
-                >
-                  {busyAction === "final" ? "Renderizando..." : "Render final"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void generateExportPackage()}
-                  disabled={busyAction !== null || !exportPackageReady}
-                >
-                  {busyAction === "export-package" ? "Gerando export..." : "Gerar pacote de export"}
-                </button>
-              </div>
-              <p className="helper">
-                Cada botao segue a ordem real do pipeline. Se o stage atual nao permitir a etapa, a API responde com erro claro.
-              </p>
-              {exportPackageReady ? (
-                <p className="helper">Depois do render final, voce pode gerar o pacote local com metadata e arquivos exportados.</p>
-              ) : null}
-            </div>
-
-            <div className="asset-form">
-              <div className="panel-header">
-                <h3>YouTube Auth</h3>
-                <div className="badges">
-                  <span className={`badge ${youtubeAuthStatus?.enabled ? "success" : "warning"}`}>
-                    {youtubeAuthStatus?.enabled ? "enabled" : "disabled"}
-                  </span>
-                  <span className={`badge ${youtubeAuthStatus?.ready_for_upload ? "success" : "subtle"}`}>
-                    {youtubeAuthStatus?.ready_for_upload ? "ready_for_upload" : "not_ready"}
-                  </span>
-                </div>
-              </div>
-              <p className="helper">
-                Upload ainda nao esta habilitado. Esta area so prepara a autenticacao local de forma segura.
-              </p>
-              <button
-                type="button"
-                className="primary secondary"
-                onClick={() => void simulateYoutubeUpload()}
-                disabled={busyAction !== null || selectedVideo === null}
-              >
-                {busyAction === "youtube-upload" ? "Simulando..." : "Simular upload YouTube"}
-              </button>
-              {youtubeAuthStatus ? (
-                <div className="detail-asset">
-                  <p>
-                    <strong>Client secrets:</strong>{" "}
-                    {youtubeAuthStatus.client_secrets_configured ? "configurado" : "ausente"}
-                  </p>
-                  <p>
-                    <strong>Token local:</strong> {youtubeAuthStatus.token_configured ? "configurado" : "ausente"}
-                  </p>
-                  <p>
-                    <strong>Pronto para upload:</strong> {youtubeAuthStatus.ready_for_upload ? "sim" : "nao"}
-                  </p>
-                  {youtubeAuthStatus.warnings.length > 0 ? (
-                    <div className="badge-row">
-                      {youtubeAuthStatus.warnings.map((warning) => (
-                        <span key={warning} className="badge warning">
-                          {warning}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="helper">Nenhum aviso de configuracao no momento.</p>
-                  )}
-                </div>
-              ) : (
-                <p className="helper">Status indisponivel ate a API responder ou a pagina ser atualizada.</p>
-              )}
-              {youtubeUploadResult ? (
-                <div className="detail-asset">
-                  <p>
-                    <strong>Upload status:</strong> {youtubeUploadResult.upload_status}
-                  </p>
-                  <p>
-                    <strong>Mensagem:</strong> {youtubeUploadResult.message}
-                  </p>
-                  <p>
-                    <strong>Video YouTube:</strong> {youtubeUploadResult.youtube_video_id ?? "null"}
-                  </p>
-                  <p>
-                    <strong>Checked at:</strong> {youtubeUploadResult.checked_at}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="asset-form">
-              <div className="panel-header">
-                <h3>YouTube Prep</h3>
-                <span className="panel-hint">{youtubePrepReady ? "pronto para salvar" : "aguardando final render"}</span>
-              </div>
-              <div className="asset-form-grid">
-                <label className="field asset-form-tags">
-                  <span>Title</span>
-                  <input value={youtubeTitle} onChange={(event) => setYoutubeTitle(event.target.value)} disabled={!youtubePrepReady || busyAction !== null} />
-                </label>
-                <label className="field">
-                  <span>Visibility</span>
-                  <select value={youtubeVisibility} onChange={(event) => setYoutubeVisibility(event.target.value)} disabled={!youtubePrepReady || busyAction !== null}>
-                    <option value="private">private</option>
-                    <option value="unlisted">unlisted</option>
-                    <option value="public">public</option>
-                  </select>
-                </label>
-                <label className="field asset-form-tags">
-                  <span>Description</span>
-                  <textarea
-                    value={youtubeDescription}
-                    onChange={(event) => setYoutubeDescription(event.target.value)}
-                    disabled={!youtubePrepReady || busyAction !== null}
-                    rows={8}
-                  />
-                </label>
-                <label className="field asset-form-tags">
-                  <span>Tags</span>
-                  <input value={youtubeTagsText} onChange={(event) => setYoutubeTagsText(event.target.value)} disabled={!youtubePrepReady || busyAction !== null} />
-                </label>
-              </div>
-              <div className="asset-form-actions">
-                <span className="panel-hint">made_for_kids: false por padrao</span>
-                <button type="button" className="primary secondary" onClick={() => void saveYouTubePrep()} disabled={!youtubePrepReady || busyAction !== null}>
-                  {busyAction === "youtube-prep" ? "Salvando..." : "Salvar YouTube Prep"}
-                </button>
-              </div>
-              {selectedVideo.youtube_publish_path ? (
-                <p className="helper">
-                  JSON salvo em <code>{selectedVideo.youtube_publish_path}</code>.
-                </p>
-              ) : (
-                <p className="helper">Salve o JSON local depois do render final para preparar a publicacao manualmente.</p>
-              )}
-            </div>
-
-            <div className="asset-form">
-              <div className="panel-header">
-                <h3>Pronto para publicar?</h3>
-                <div className="badges">
-                  <span className={`badge ${publishReady ? "success" : "warning"}`}>
-                    {publishReady ? "ready" : "missing_items"}
-                  </span>
-                  <span className="panel-hint">{publishReadiness?.stage_status ?? "aguardando final render"}</span>
-                </div>
-              </div>
-              {selectedVideo?.stage_status !== "final_rendered" ? (
-                <p className="helper">O checklist so fica disponivel depois do render final e do pacote de export.</p>
-              ) : null}
-              {publishReadiness ? (
-                <div className="detail-asset">
-                  <p>
-                    <strong>Status geral:</strong> {publishReadiness.overall_status}
-                  </p>
-                  <p>
-                    <strong>Itens faltando:</strong>{" "}
-                    {publishReadiness.missing_items.length ? publishReadiness.missing_items.join(", ") : "nenhum"}
-                  </p>
-                  <div className="badge-row">
-                    {publishReadiness.items.map((item) => (
-                      <span key={item.key} className={`badge ${item.ready ? "success" : "warning"}`}>
-                        {item.ready ? "OK" : "pendente"}: {item.label}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="paths">
-                    {publishReadiness.items.map((item) => (
-                      <div key={item.key} className="path-row">
-                        <span className="path-label">{item.label}</span>
-                        <code className={`path-value${item.ready ? "" : " is-empty"}`}>
-                          {item.value ?? (item.ready ? "ok" : "pendente")}
-                        </code>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <p className="helper">Abra um video finalizado para ver o checklist de publicacao.</p>
-              )}
-            </div>
+            </section>
 
             <div className="panel asset-panel">
               <div className="panel-header">
@@ -2292,19 +2521,6 @@ export default function DashboardPage() {
                   })
                 )}
               </div>
-            </div>
-
-            <div className="paths">
-              <PathLine label="audio_path" value={selectedVideo.audio_path} />
-              <PathLine label="caption_path" value={selectedVideo.caption_path} />
-              <PathLine label="asset_path" value={selectedVideo.asset_path} />
-              <PathLine label="preview_path" value={selectedVideo.preview_path} />
-              <PathLine label="final_path" value={selectedVideo.final_path} />
-              <PathLine label="export_metadata_path" value={selectedVideo.export_metadata_path} />
-              <PathLine label="export_final_path" value={selectedVideo.export_final_path} />
-              <PathLine label="export_caption_path" value={selectedVideo.export_caption_path} />
-              <PathLine label="export_preview_path" value={selectedVideo.export_preview_path} />
-              <PathLine label="youtube_publish_path" value={selectedVideo.youtube_publish_path} />
             </div>
           </div>
         ) : (
