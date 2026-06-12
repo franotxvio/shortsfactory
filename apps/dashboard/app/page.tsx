@@ -120,6 +120,23 @@ type PublishReadinessResponse = {
   items: PublishReadinessCheckItem[];
 };
 
+type YoutubeAuthStatusResponse = {
+  enabled: boolean;
+  client_secrets_configured: boolean;
+  token_configured: boolean;
+  ready_for_upload: boolean;
+  warnings: string[];
+};
+
+type YoutubeUploadResponse = {
+  video_id: number;
+  slug?: string | null;
+  upload_status: string;
+  youtube_video_id?: string | null;
+  message: string;
+  checked_at: string;
+};
+
 type ContentBrainSignalItem = {
   video_id: number;
   video_slug?: string | null;
@@ -268,6 +285,8 @@ export default function DashboardPage() {
   const [contentBrainSignals, setContentBrainSignals] = useState<ContentBrainSignalItem[]>([]);
   const [latestJob, setLatestJob] = useState<VideoJobItem | null>(null);
   const [publishReadiness, setPublishReadiness] = useState<PublishReadinessResponse | null>(null);
+  const [youtubeAuthStatus, setYoutubeAuthStatus] = useState<YoutubeAuthStatusResponse | null>(null);
+  const [youtubeUploadResult, setYoutubeUploadResult] = useState<YoutubeUploadResponse | null>(null);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
   const channelSlugRef = useRef(DEFAULT_FORM.channelSlug);
@@ -601,6 +620,61 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const loadYoutubeAuthStatus = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
+    const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
+    const quiet = options?.quiet ?? false;
+    try {
+      const payload = await requestJson<YoutubeAuthStatusResponse>(baseUrl, "/internal/videos/youtube/auth-status");
+      setYoutubeAuthStatus(payload);
+      if (!quiet) {
+        setMessage({
+          kind: "success",
+          text: payload.ready_for_upload
+            ? "YouTube Auth configurado e pronto para upload."
+            : "Status do YouTube Auth atualizado.",
+        });
+      }
+    } catch (error) {
+      setYoutubeAuthStatus(null);
+      if (!quiet) {
+        setMessage({
+          kind: "error",
+          text: error instanceof Error ? error.message : "Falha ao carregar status do YouTube Auth.",
+        });
+      }
+    }
+  }, []);
+
+  async function simulateYoutubeUpload() {
+    if (selectedVideoId === null) {
+      setMessage({ kind: "error", text: "Selecione um video antes de simular o upload YouTube." });
+      return;
+    }
+
+    setBusyAction("youtube-upload");
+    try {
+      const payload = await requestJson<YoutubeUploadResponse>(apiBaseUrl, `/internal/videos/${selectedVideoId}/youtube/upload`, {
+        method: "POST",
+      });
+      setYoutubeUploadResult(payload);
+      setMessage({
+        kind: "success",
+        text: payload.message,
+      });
+      void loadYoutubeAuthStatus({ quiet: true });
+      void loadPublishReadiness(selectedVideoId, { quiet: true });
+      void loadVideos({ quiet: true });
+    } catch (error) {
+      setYoutubeUploadResult(null);
+      setMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "Falha ao simular upload YouTube.",
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   const loadVideos = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
     const quiet = options?.quiet ?? false;
@@ -621,9 +695,11 @@ export default function DashboardPage() {
       setSelectedVisualTemplate(nextSelectedVideo?.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
       setPendingAssetId(null);
       setLatestJob(null);
+      setYoutubeUploadResult(null);
       void loadContentBrainSignals({ quiet: true });
       void loadLatestJob(nextSelectedId, { quiet: true });
       void loadPublishReadiness(nextSelectedId, { quiet: true });
+      void loadYoutubeAuthStatus({ quiet: true });
       if (!quiet) {
         setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
       }
@@ -634,7 +710,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadContentBrainSignals, loadLatestJob, loadPublishReadiness, syncPerformanceForm, syncYoutubePrepForm]);
+  }, [loadContentBrainSignals, loadLatestJob, loadPublishReadiness, loadYoutubeAuthStatus, syncPerformanceForm, syncYoutubePrepForm]);
 
   const loadAssets = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
@@ -690,6 +766,7 @@ export default function DashboardPage() {
     setSelectedVisualTemplate(nextVideo.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
     setLatestJob(null);
+    setYoutubeUploadResult(null);
     void loadLatestJob(nextVideo.video_id, { quiet: true });
     void loadPublishReadiness(nextVideo.video_id, { quiet: true });
   }
@@ -703,6 +780,7 @@ export default function DashboardPage() {
     setSelectedVisualTemplate(video.visual_template ?? DEFAULT_VISUAL_TEMPLATE);
     setPendingAssetId(null);
     setLatestJob(null);
+    setYoutubeUploadResult(null);
     void loadLatestJob(video.video_id, { quiet: true });
     void loadPublishReadiness(video.video_id, { quiet: true });
   }
@@ -1307,9 +1385,10 @@ export default function DashboardPage() {
       void loadAssets({ quiet: true });
       void loadChannelPresets({ quiet: true });
       void loadContentBrainSignals({ quiet: true });
+      void loadYoutubeAuthStatus({ quiet: true });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadVideos, loadAssets, loadChannelPresets, loadContentBrainSignals]);
+  }, [loadVideos, loadAssets, loadChannelPresets, loadContentBrainSignals, loadYoutubeAuthStatus]);
 
   return (
     <main className="shell">
@@ -1335,6 +1414,7 @@ export default function DashboardPage() {
                 void loadVideos();
                 void loadAssets({ quiet: true });
                 void loadChannelPresets({ quiet: true });
+                void loadYoutubeAuthStatus({ quiet: true });
               }}
               disabled={loading}
             >
@@ -1881,6 +1961,74 @@ export default function DashboardPage() {
               </p>
               {exportPackageReady ? (
                 <p className="helper">Depois do render final, voce pode gerar o pacote local com metadata e arquivos exportados.</p>
+              ) : null}
+            </div>
+
+            <div className="asset-form">
+              <div className="panel-header">
+                <h3>YouTube Auth</h3>
+                <div className="badges">
+                  <span className={`badge ${youtubeAuthStatus?.enabled ? "success" : "warning"}`}>
+                    {youtubeAuthStatus?.enabled ? "enabled" : "disabled"}
+                  </span>
+                  <span className={`badge ${youtubeAuthStatus?.ready_for_upload ? "success" : "subtle"}`}>
+                    {youtubeAuthStatus?.ready_for_upload ? "ready_for_upload" : "not_ready"}
+                  </span>
+                </div>
+              </div>
+              <p className="helper">
+                Upload ainda nao esta habilitado. Esta area so prepara a autenticacao local de forma segura.
+              </p>
+              <button
+                type="button"
+                className="primary secondary"
+                onClick={() => void simulateYoutubeUpload()}
+                disabled={busyAction !== null || selectedVideo === null}
+              >
+                {busyAction === "youtube-upload" ? "Simulando..." : "Simular upload YouTube"}
+              </button>
+              {youtubeAuthStatus ? (
+                <div className="detail-asset">
+                  <p>
+                    <strong>Client secrets:</strong>{" "}
+                    {youtubeAuthStatus.client_secrets_configured ? "configurado" : "ausente"}
+                  </p>
+                  <p>
+                    <strong>Token local:</strong> {youtubeAuthStatus.token_configured ? "configurado" : "ausente"}
+                  </p>
+                  <p>
+                    <strong>Pronto para upload:</strong> {youtubeAuthStatus.ready_for_upload ? "sim" : "nao"}
+                  </p>
+                  {youtubeAuthStatus.warnings.length > 0 ? (
+                    <div className="badge-row">
+                      {youtubeAuthStatus.warnings.map((warning) => (
+                        <span key={warning} className="badge warning">
+                          {warning}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="helper">Nenhum aviso de configuracao no momento.</p>
+                  )}
+                </div>
+              ) : (
+                <p className="helper">Status indisponivel ate a API responder ou a pagina ser atualizada.</p>
+              )}
+              {youtubeUploadResult ? (
+                <div className="detail-asset">
+                  <p>
+                    <strong>Upload status:</strong> {youtubeUploadResult.upload_status}
+                  </p>
+                  <p>
+                    <strong>Mensagem:</strong> {youtubeUploadResult.message}
+                  </p>
+                  <p>
+                    <strong>Video YouTube:</strong> {youtubeUploadResult.youtube_video_id ?? "null"}
+                  </p>
+                  <p>
+                    <strong>Checked at:</strong> {youtubeUploadResult.checked_at}
+                  </p>
+                </div>
               ) : null}
             </div>
 

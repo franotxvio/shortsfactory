@@ -40,6 +40,23 @@ class PublishReadinessResponse(BaseModel):
     items: list[PublishReadinessCheckResponse] = Field(default_factory=list)
 
 
+class YoutubeAuthStatusResponse(BaseModel):
+    enabled: bool
+    client_secrets_configured: bool
+    token_configured: bool
+    ready_for_upload: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
+class YoutubeUploadResponse(BaseModel):
+    video_id: int
+    slug: str | None = None
+    upload_status: str
+    youtube_video_id: str | None = None
+    message: str
+    checked_at: datetime
+
+
 class VideoProductionResponse(BaseModel):
     video_id: int
     channel_slug: str | None = None

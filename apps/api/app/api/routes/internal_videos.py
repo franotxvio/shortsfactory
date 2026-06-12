@@ -28,6 +28,8 @@ from app.schemas.video_production import (
     VideoPreviewRequest,
     VideoPreviewRegenerateRequest,
     PublishReadinessResponse,
+    YoutubeUploadResponse,
+    YoutubeAuthStatusResponse,
     VideoScriptUpdateRequest,
     VideoProductionRequest,
     VideoProductionResponse,
@@ -36,6 +38,8 @@ from app.schemas.video_production import (
 )
 from app.services.video_production import VideoProductionService
 from app.services.video_job_queue import VideoJobQueueService, get_video_job_queue_service
+from app.services.youtube_publish_service import get_youtube_auth_status
+from app.services.youtube_publish_service import simulate_youtube_upload
 
 router = APIRouter(prefix="/videos", tags=["internal-videos"])
 DEMO_CHANNEL_SLUGS = {"internal-test", "manual-test"}
@@ -677,6 +681,29 @@ async def get_publish_readiness(
     except ValueError as error:
         _raise_http_error(error)
     return PublishReadinessResponse.model_validate(result)
+
+
+@router.get("/youtube/auth-status", response_model=YoutubeAuthStatusResponse)
+async def get_youtube_auth_status_endpoint() -> YoutubeAuthStatusResponse:
+    return YoutubeAuthStatusResponse.model_validate(get_youtube_auth_status(get_settings()))
+
+
+@router.post("/{video_id}/youtube/upload", response_model=YoutubeUploadResponse)
+async def simulate_youtube_upload_endpoint(
+    video_id: int,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> YoutubeUploadResponse:
+    result = await simulate_youtube_upload(video_id=video_id, service=service, settings=get_settings())
+    return YoutubeUploadResponse.model_validate(
+        {
+            "video_id": result["video_id"],
+            "slug": result["slug"],
+            "upload_status": result["upload_status"],
+            "youtube_video_id": result["youtube_video_id"],
+            "message": result["message"],
+            "checked_at": result["checked_at"],
+        }
+    )
 
 
 @router.get("/{video_id}/status", response_model=VideoPipelineResponse)

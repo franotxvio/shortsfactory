@@ -31,6 +31,7 @@ from app.services.video_job_queue import VideoJobQueueService, get_video_job_que
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
 from app.services.video_production import VideoProductionResult, VideoProductionService
+from app.services.youtube_publish_service import get_youtube_auth_status
 from app.schemas.video_production import VideoJobResponse
 import app.api.routes.internal_videos as internal_videos_routes
 import app.services.render_worker as render_worker_module
@@ -253,6 +254,45 @@ async def _create_video_with_optional_assets(
     if asset is not None:
         await db_session.refresh(asset)
     return video
+
+
+async def _prepare_video_for_youtube_upload(
+    db_session,
+    tmp_path,
+    *,
+    slug_suffix: str = "upload",
+) -> tuple[Video, Settings, VideoProductionService]:
+    await _create_approved_script(db_session)
+    audio_bytes = _build_mp3_bytes(tmp_path)
+    fake_tts_client = FakeTTSClient(audio_bytes=audio_bytes)
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+    tts_worker = TTSWorker(session=db_session, client=fake_tts_client, settings=settings)
+    production_service = VideoProductionService(session=db_session, settings=settings, tts_worker=tts_worker)
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+    result = await production_service.produce_full_video(video_id=video.id)
+    assert Path(result.final_path).exists()
+    await db_session.commit()
+    await production_service.create_export_package(video_id=video.id)
+    await production_service.create_youtube_publish_prep(
+        video_id=video.id,
+        title="Titulo pronto",
+        description="Descricao pronta",
+        tags=["shorts", "python", "ready"],
+        visibility="private",
+        made_for_kids=False,
+    )
+    await db_session.commit()
+    return video, settings, production_service
 
 
 def _build_preset_settings(tmp_path: Path) -> Settings:
@@ -1057,6 +1097,192 @@ async def test_internal_video_publish_readiness_blocks_without_final_render(
 
     assert readiness_response.status_code == 400
     assert "final render" in readiness_response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_internal_video_youtube_upload_blocks_when_disabled(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    video, settings, _ = await _prepare_video_for_youtube_upload(db_session, tmp_path)
+    settings.youtube_client_secrets_path = tmp_path / "client_secrets.json"
+    settings.youtube_client_secrets_path.write_text("{}", encoding="utf-8")
+    settings.youtube_token_path = tmp_path / "token.json"
+    settings.youtube_token_path.write_text("{}", encoding="utf-8")
+    settings.youtube_upload_enabled = False
+
+    monkeypatch.setattr(internal_videos_routes, "get_settings", lambda: settings)
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        return VideoProductionService(session=session, settings=settings)
+
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(f"/internal/videos/{video.id}/youtube/upload")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["upload_status"] == "ready_but_disabled"
+    assert payload["youtube_video_id"] is None
+    assert "desativado" in payload["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_internal_video_youtube_upload_blocks_when_readiness_missing(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    await _create_approved_script(db_session)
+    audio_bytes = _build_mp3_bytes(tmp_path)
+    fake_tts_client = FakeTTSClient(audio_bytes=audio_bytes)
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+        youtube_upload_enabled=True,
+    )
+    settings.youtube_client_secrets_path = tmp_path / "client_secrets.json"
+    settings.youtube_client_secrets_path.write_text("{}", encoding="utf-8")
+    settings.youtube_token_path = tmp_path / "token.json"
+    settings.youtube_token_path.write_text("{}", encoding="utf-8")
+
+    production_service = VideoProductionService(
+        session=db_session,
+        settings=settings,
+        tts_worker=TTSWorker(session=db_session, client=fake_tts_client, settings=settings),
+    )
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+    result = await production_service.produce_full_video(video_id=video.id)
+    assert Path(result.final_path).exists()
+    await db_session.commit()
+
+    monkeypatch.setattr(internal_videos_routes, "get_settings", lambda: settings)
+    app.dependency_overrides[get_async_session] = _override_async_session
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        return VideoProductionService(session=session, settings=settings)
+
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(f"/internal/videos/{video.id}/youtube/upload")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["upload_status"] == "blocked"
+    assert "pronto para publicação" in payload["message"].lower() or "pronto para publicacao" in payload["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_internal_video_youtube_upload_blocks_when_auth_not_ready(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    video, settings, _ = await _prepare_video_for_youtube_upload(db_session, tmp_path)
+    settings.youtube_upload_enabled = True
+
+    monkeypatch.setattr(internal_videos_routes, "get_settings", lambda: settings)
+    app.dependency_overrides[get_async_session] = _override_async_session
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        return VideoProductionService(session=session, settings=settings)
+
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(f"/internal/videos/{video.id}/youtube/upload")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["upload_status"] == "blocked"
+    assert "autentica" in payload["message"].lower() or "publicacao" in payload["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_internal_video_youtube_upload_simulated_when_ready(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    video, settings, _ = await _prepare_video_for_youtube_upload(db_session, tmp_path)
+    settings.youtube_client_secrets_path = tmp_path / "client_secrets.json"
+    settings.youtube_client_secrets_path.write_text("{}", encoding="utf-8")
+    settings.youtube_token_path = tmp_path / "token.json"
+    settings.youtube_token_path.write_text("{}", encoding="utf-8")
+    settings.youtube_upload_enabled = True
+
+    monkeypatch.setattr(internal_videos_routes, "get_settings", lambda: settings)
+    app.dependency_overrides[get_async_session] = _override_async_session
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        return VideoProductionService(session=session, settings=settings)
+
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    try:
+        with TestClient(app) as client:
+            response = client.post(f"/internal/videos/{video.id}/youtube/upload")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["upload_status"] == "simulated"
+    assert payload["youtube_video_id"] is None
+    assert "simulado" in payload["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -2739,3 +2965,63 @@ def test_video_jobs_worker_configures_selector_policy_on_windows(monkeypatch) ->
 
     assert len(calls) == 1
     assert isinstance(calls[0], FakePolicy)
+
+
+def test_youtube_auth_status_disabled_by_default(tmp_path) -> None:
+    settings = Settings(local_storage_path=tmp_path / "storage")
+
+    status = get_youtube_auth_status(settings)
+
+    assert status["enabled"] is False
+    assert status["client_secrets_configured"] is False
+    assert status["token_configured"] is False
+    assert status["ready_for_upload"] is False
+    assert any("disabled" in warning.lower() for warning in status["warnings"])
+
+
+def test_youtube_auth_status_partial_config_returns_warnings(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    client_secrets = tmp_path / "client_secrets.json"
+    client_secrets.write_text("{}", encoding="utf-8")
+
+    settings = Settings(
+        local_storage_path=storage_root,
+        youtube_client_secrets_path=client_secrets,
+        youtube_upload_enabled=True,
+    )
+
+    status = get_youtube_auth_status(settings)
+
+    assert status["enabled"] is True
+    assert status["client_secrets_configured"] is True
+    assert status["token_configured"] is False
+    assert status["ready_for_upload"] is False
+    assert any("token" in warning.lower() for warning in status["warnings"])
+
+
+def test_youtube_auth_status_endpoint_reports_ready_only_when_enabled(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True, exist_ok=True)
+    client_secrets = tmp_path / "client_secrets.json"
+    client_secrets.write_text("{}", encoding="utf-8")
+    token_path = tmp_path / "token.json"
+    token_path.write_text("{}", encoding="utf-8")
+
+    settings = Settings(
+        local_storage_path=storage_root,
+        youtube_client_secrets_path=client_secrets,
+        youtube_token_path=token_path,
+        youtube_upload_enabled=True,
+    )
+    monkeypatch.setattr(internal_videos_routes, "get_settings", lambda: settings)
+
+    with TestClient(app) as client:
+        response = client.get("/internal/videos/youtube/auth-status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is True
+    assert payload["client_secrets_configured"] is True
+    assert payload["token_configured"] is True
+    assert payload["ready_for_upload"] is True
+    assert payload["warnings"] == []

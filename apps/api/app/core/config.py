@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     openai_llm_model: str = "gpt-4o-mini"
     openai_tts_model: str = "tts-1"
     openai_tts_voice: str = "onyx"
+    youtube_client_secrets_path: Path | None = None
+    youtube_token_path: Path | None = None
+    youtube_upload_enabled: bool = False
     openai_idea_max_tokens: int = 120
     openai_hook_max_tokens: int = 96
     openai_script_max_tokens: int = 900
