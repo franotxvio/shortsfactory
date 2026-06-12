@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -908,7 +908,7 @@ export default function DashboardPage() {
       return;
     }
     if (!scriptEditable) {
-      setMessage({ kind: "error", text: "O roteiro só pode ser editado antes do TTS começar." });
+      setMessage({ kind: "error", text: "O roteiro sÃ³ pode ser editado antes do TTS comeÃ§ar." });
       return;
     }
 
@@ -1024,7 +1024,7 @@ export default function DashboardPage() {
       return;
     }
     if (!isAllowedUploadExtension(assetUploadFile.name)) {
-      setMessage({ kind: "error", text: "Apenas .png, .jpg, .jpeg e .webp são permitidos. .mp4 continua bloqueado." });
+      setMessage({ kind: "error", text: "Apenas .png, .jpg, .jpeg e .webp sÃ£o permitidos. .mp4 continua bloqueado." });
       return;
     }
 
@@ -1069,15 +1069,15 @@ export default function DashboardPage() {
       if (selectedVideoId !== null && canSelectAsset(selectedVideo)) {
         try {
           await applyAsset(created, { quiet: true });
-          setMessage({ kind: "success", text: "Asset enviado e cadastrado. Asset aplicado ao vídeo atual." });
+          setMessage({ kind: "success", text: "Asset enviado e cadastrado. Asset aplicado ao vÃ­deo atual." });
           return;
         } catch (error) {
           setMessage({
             kind: "error",
             text:
               error instanceof Error
-                ? `Asset enviado e cadastrado, mas não foi possível aplicar ao vídeo atual: ${error.message}`
-                : "Asset enviado e cadastrado, mas não foi possível aplicar ao vídeo atual.",
+                ? `Asset enviado e cadastrado, mas nÃ£o foi possÃ­vel aplicar ao vÃ­deo atual: ${error.message}`
+                : "Asset enviado e cadastrado, mas nÃ£o foi possÃ­vel aplicar ao vÃ­deo atual.",
           });
           return;
         }
@@ -1087,7 +1087,7 @@ export default function DashboardPage() {
         setPendingAssetId(created.asset_id);
         setMessage({
           kind: "success",
-          text: "Asset enviado e cadastrado. Asset selecionado para regeneração do preview.",
+          text: "Asset enviado e cadastrado. Asset selecionado para regeneraÃ§Ã£o do preview.",
         });
         return;
       }
@@ -1136,7 +1136,7 @@ export default function DashboardPage() {
           await applyAsset(created, { quiet: true });
           setMessage({
             kind: "success",
-            text: "Asset cadastrado. Asset aplicado ao vídeo atual.",
+            text: "Asset cadastrado. Asset aplicado ao vÃ­deo atual.",
           });
           return;
         } catch (error) {
@@ -1144,8 +1144,8 @@ export default function DashboardPage() {
             kind: "error",
             text:
               error instanceof Error
-                ? `Asset cadastrado, mas não foi possível aplicar ao vídeo atual: ${error.message}`
-                : "Asset cadastrado, mas não foi possível aplicar ao vídeo atual.",
+                ? `Asset cadastrado, mas nÃ£o foi possÃ­vel aplicar ao vÃ­deo atual: ${error.message}`
+                : "Asset cadastrado, mas nÃ£o foi possÃ­vel aplicar ao vÃ­deo atual.",
           });
           return;
         }
@@ -1427,10 +1427,10 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      <nav className="dashboard-toc" aria-label="Atalhos da demonstração local">
-        <a href="#create-video">Criar vídeo</a>
+      <nav className="dashboard-toc" aria-label="Atalhos da demonstraÃ§Ã£o local">
+        <a href="#create-video">Criar vÃ­deo</a>
         <a href="#channel-presets">Presets</a>
-        <a href="#selected-video">Vídeo selecionado</a>
+        <a href="#selected-video">VÃ­deo selecionado</a>
         <a href="#script-section">Roteiro</a>
         <a href="#pipeline-section">Pipeline</a>
         <a href="#assets-section">Assets</a>
@@ -1441,7 +1441,7 @@ export default function DashboardPage() {
       <section className="grid">
         <aside className="panel">
           <div className="panel-header" id="create-video">
-            <h2>1. Criar vídeo</h2>
+            <h2>1. Criar vÃ­deo</h2>
             <span className="panel-hint">execution_mode = fake</span>
           </div>
 
@@ -1554,22 +1554,24 @@ export default function DashboardPage() {
             <h2>5. Pipeline</h2>
             <span className="panel-hint">video selecionado</span>
           </div>
-          <button
-            type="button"
-            className="primary secondary"
-            onClick={produceFakePipeline}
-            disabled={busyAction !== null || pipelineCompleted}
-          >
-            {pipelineCompleted ? "Pipeline concluido" : busyAction === "produce" ? "Processando..." : "Produzir pipeline fake"}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void enqueueBackgroundPipeline()}
-            disabled={busyAction !== null || selectedVideoId === null}
-          >
-            {busyAction === "enqueue-job" ? "Enfileirando..." : "Produzir em background"}
-          </button>
+          <div className="pipeline-actions">
+            <button
+              type="button"
+              className="primary secondary"
+              onClick={produceFakePipeline}
+              disabled={busyAction !== null || pipelineCompleted}
+            >
+              {pipelineCompleted ? "Pipeline concluido" : busyAction === "produce" ? "Processando..." : "Produzir pipeline fake"}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void enqueueBackgroundPipeline()}
+              disabled={busyAction !== null || selectedVideoId === null}
+            >
+              {busyAction === "enqueue-job" ? "Enfileirando..." : "Produzir em background"}
+            </button>
+          </div>
           {pipelineCompleted ? <p className="helper">Este video ja esta finalizado. Atualize ou escolha outro item para rodar novamente.</p> : null}
 
           <div className={`message ${message.kind}`}>
@@ -1652,7 +1654,7 @@ export default function DashboardPage() {
 
       <section className="panel detail-panel" id="selected-video">
         <div className="panel-header">
-          <h2>3. Vídeo selecionado</h2>
+          <h2>3. VÃ­deo selecionado</h2>
           <span className="panel-hint">{selectedVideo ? `Video #${selectedVideo.video_id}` : "Nenhum selecionado"}</span>
         </div>
 
@@ -1662,7 +1664,7 @@ export default function DashboardPage() {
               <div className="section-header">
                 <div>
                   <p className="section-kicker">3</p>
-                  <h3>Vídeo selecionado</h3>
+                  <h3>VÃ­deo selecionado</h3>
                 </div>
                 <span className="panel-hint">status, script, assets e paths</span>
               </div>
@@ -1976,7 +1978,7 @@ export default function DashboardPage() {
                       <input value={assetUploadSlug} onChange={(event) => setAssetUploadSlug(event.target.value)} />
                     </label>
                     <label className="field">
-                      <span>Licença</span>
+                      <span>LicenÃ§a</span>
                       <input value={assetUploadLicenseName} onChange={(event) => setAssetUploadLicenseName(event.target.value)} />
                     </label>
                     <label className="field">
@@ -2008,7 +2010,7 @@ export default function DashboardPage() {
                 <div className="asset-form">
                   <div className="panel-header">
                     <h3>Cadastro local por caminho</h3>
-                    <span className="panel-hint">reaproveita um arquivo já existente em storage/assets</span>
+                    <span className="panel-hint">reaproveita um arquivo jÃ¡ existente em storage/assets</span>
                   </div>
                   <div className="asset-form-grid">
                     <label className="field">
@@ -2364,175 +2366,6 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <div className="panel asset-panel">
-              <div className="panel-header">
-                <h3>Assets locais</h3>
-                <div className="panel-actions">
-                  <span className="panel-hint">{assets.length} itens</span>
-                  <button type="button" className="ghost" onClick={() => void loadAssets()} disabled={busyAction !== null}>
-                    Recarregar
-                  </button>
-                </div>
-              </div>
-              <p className="helper">
-                Use um asset local antes do preview. O fallback padrao continua disponivel se nada for escolhido.
-              </p>
-              {previewNeedsRefresh ? (
-                <p className="warning">
-                  O asset ou template atual foi alterado. Use {'"'}Regenerar preview{'"'} para atualizar o video selecionado.
-                </p>
-              ) : null}
-              <div className="asset-upload-form">
-                <div className="panel-header">
-                  <h3>Upload local</h3>
-                  <span className="panel-hint">png / jpg / jpeg / webp</span>
-                </div>
-                <div className="asset-form-grid">
-                  <label className="field asset-form-tags">
-                    <span>Arquivo</span>
-                    <input
-                      type="file"
-                      accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-                      onChange={(event) => handleAssetUploadFileChange(event.target.files?.[0] ?? null)}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Nome</span>
-                    <input value={assetUploadName} onChange={(event) => setAssetUploadName(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Slug</span>
-                    <input value={assetUploadSlug} onChange={(event) => setAssetUploadSlug(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Licença</span>
-                    <input value={assetUploadLicenseName} onChange={(event) => setAssetUploadLicenseName(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Channel slug opcional</span>
-                    <input
-                      value={assetUploadChannelSlug}
-                      onChange={(event) => setAssetUploadChannelSlug(event.target.value)}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Tema/nicho opcional</span>
-                    <input value={assetUploadTopic} onChange={(event) => setAssetUploadTopic(event.target.value)} />
-                  </label>
-                  <label className="field asset-form-tags">
-                    <span>Tags opcional</span>
-                    <input value={assetUploadTagsText} onChange={(event) => setAssetUploadTagsText(event.target.value)} />
-                  </label>
-                </div>
-                <div className="asset-form-actions">
-                  <span className="panel-hint">
-                    Destino seguro: <code>storage/assets/uploads</code>. .mp4 continua bloqueado.
-                  </span>
-                  <button type="button" className="primary secondary" onClick={() => void uploadLocalAsset()} disabled={busyAction !== null}>
-                    {busyAction === "upload-asset" ? "Enviando..." : "Enviar arquivo"}
-                  </button>
-                </div>
-                {assetUploadFile ? <p className="helper">Arquivo selecionado: {assetUploadFile.name}</p> : null}
-              </div>
-              <div className="asset-form">
-                <div className="panel-header">
-                  <h3>Cadastro local por caminho</h3>
-                  <span className="panel-hint">reaproveita um arquivo já existente em storage/assets</span>
-                </div>
-                <div className="asset-form-grid">
-                  <label className="field">
-                    <span>File path</span>
-                    <input value={assetFilePath} onChange={(event) => setAssetFilePath(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Nome</span>
-                    <input value={assetName} onChange={(event) => setAssetName(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Slug</span>
-                    <input value={assetSlug} onChange={(event) => setAssetSlug(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Licenca</span>
-                    <input value={assetLicenseName} onChange={(event) => setAssetLicenseName(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Channel slug opcional</span>
-                    <input value={assetChannelSlug} onChange={(event) => setAssetChannelSlug(event.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span>Tema/nicho opcional</span>
-                    <input value={assetTopic} onChange={(event) => setAssetTopic(event.target.value)} />
-                  </label>
-                  <label className="field asset-form-tags">
-                    <span>Tags opcional</span>
-                    <input value={assetTagsText} onChange={(event) => setAssetTagsText(event.target.value)} />
-                  </label>
-                </div>
-                <div className="asset-form-actions">
-                  <span className="panel-hint">asset_type: background_image</span>
-                  <button type="button" className="primary secondary" onClick={() => void registerLocalAsset()} disabled={busyAction !== null}>
-                    {busyAction === "register-asset" ? "Cadastrando..." : "Cadastrar asset"}
-                  </button>
-                </div>
-                <p className="helper">
-                  Exemplo pronto para a UI: <code>storage/assets/manual/python-bg.png</code>. Arquivos .mp4 ainda sao bloqueados.
-                </p>
-              </div>
-              <div className="asset-list">
-                {assets.length === 0 ? (
-                  <div className="empty-state">Nenhum asset local cadastrado. O fallback padrao sera usado.</div>
-                ) : (
-                  assets.map((asset) => {
-                    const isSelected = selectedVideo?.asset_id === asset.asset_id;
-                    const isPending = pendingAssetId === asset.asset_id;
-                    const isBusy = busyAction === `asset-${asset.asset_id}`;
-                    const canUse = canSelectAsset(selectedVideo) || canRegeneratePreview(selectedVideo);
-                    return (
-                      <article
-                        key={asset.asset_id}
-                        className={`asset-card${isSelected ? " selected" : ""}${isPending ? " pending" : ""}`}
-                      >
-                        <div className="video-card-top">
-                          <div>
-                            <p className="video-id">Asset #{asset.asset_id}</p>
-                            <h3>{asset.name}</h3>
-                          </div>
-                          <div className="badges">
-                            <span className="badge">{asset.asset_type}</span>
-                            {asset.is_default ? <span className="badge demo">DEFAULT</span> : null}
-                          </div>
-                        </div>
-                        <p className="helper">Slug: {asset.slug}</p>
-                        <p className="helper">Arquivo: {asset.source_path ?? "sem caminho"}</p>
-                        <p className="helper">Licenca: {asset.license_name}</p>
-                        {asset.channel_slug ? <p className="helper">Canal: {asset.channel_slug}</p> : null}
-                        {asset.topic ? <p className="helper">Tema: {asset.topic}</p> : null}
-                        <AssetTags tags={asset.tags} />
-                        <div className="asset-actions">
-                          <button
-                            type="button"
-                            className="primary secondary"
-                            onClick={() => void applyAsset(asset)}
-                            disabled={!canUse || busyAction !== null || (isSelected && !isPending)}
-                          >
-                            {isBusy
-                              ? "Aplicando..."
-                              : isPending
-                                ? "Selecionado para regenerar"
-                                : isSelected
-                                  ? "Asset atual"
-                                  : canSelectAsset(selectedVideo)
-                                    ? "Usar este asset"
-                                    : "Selecionar para regenerar"}
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })
-                )}
-              </div>
-            </div>
           </div>
         ) : (
           <div className="empty-state">Selecione um video na lista para ver os paths gerados.</div>

@@ -237,6 +237,11 @@ textarea:focus {
   gap: 10px;
 }
 
+.pipeline-actions {
+  display: grid;
+  gap: 12px;
+}
+
 .panel-actions select {
   width: auto;
   min-width: 150px;
