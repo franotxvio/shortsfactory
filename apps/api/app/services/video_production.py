@@ -23,7 +23,16 @@ from app.services.asset_pool_service import AssetPoolService
 from app.services.caption_worker import CaptionWorker
 from app.services.media_utils import build_deterministic_mp3_bytes
 from app.services.render_worker import RenderWorker
-from app.services.script_engine import ScriptEngineService
+from app.services.script_engine import (
+    ScriptEngineService,
+    _build_consolidated_script_text,
+    _VIRAL_MICRO_SHORT_DEFAULT_DURATION_SECONDS,
+    _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS,
+    _VIRAL_MICRO_SHORT_STYLE,
+    _is_viral_micro_short_mode,
+    _viral_micro_short_body_blocks,
+    _viral_micro_short_hook,
+)
 from app.services.tts_worker import TTSWorker
 
 
@@ -270,6 +279,8 @@ class VideoProductionService:
         channel_name: str,
         video_title: str | None = None,
         execution_mode: VideoExecutionMode = VideoExecutionMode.FAKE,
+        style_tone: str | None = None,
+        target_duration_seconds: int | None = None,
     ) -> VideoPipelineState:
         preset = await self.get_channel_preset(channel_slug=channel_slug)
         if self.session.in_transaction():
@@ -281,6 +292,8 @@ class VideoProductionService:
                 channel_name=channel_name,
                 video_title=video_title,
                 preset=preset,
+                style_tone=style_tone,
+                target_duration_seconds=target_duration_seconds,
             )
         return await self._create_fake_test_video(
             topic=topic,
@@ -288,6 +301,8 @@ class VideoProductionService:
             channel_name=channel_name,
             video_title=video_title,
             preset=preset,
+            style_tone=style_tone,
+            target_duration_seconds=target_duration_seconds,
         )
 
     async def list_channel_presets(self) -> list[ChannelPresetRecord]:
@@ -848,12 +863,19 @@ class VideoProductionService:
         channel_name: str,
         video_title: str | None,
         preset: ChannelPresetRecord | None = None,
+        style_tone: str | None = None,
+        target_duration_seconds: int | None = None,
     ) -> VideoPipelineState:
         async with self.session.begin():
             channel_name_to_use = preset.channel_name if preset is not None else channel_name
             channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name_to_use)
             video_slug = f"{self._slugify(topic)}-{uuid4().hex[:8]}"
-            target_duration = preset.target_duration_seconds if preset is not None else None
+            target_duration = (
+                target_duration_seconds
+                if target_duration_seconds is not None
+                else (preset.target_duration_seconds if preset is not None else None)
+            )
+            effective_style_tone = style_tone if style_tone is not None else (preset.default_topic_style if preset is not None else None)
             content_brain_context = await self.content_brain_service.build_script_context(
                 channel_slug=channel_slug,
                 topic=topic,
@@ -871,7 +893,7 @@ class VideoProductionService:
 
             script_content = self._build_fake_script_payload(
                 topic=topic,
-                style_tone=preset.default_topic_style if preset is not None else None,
+                style_tone=effective_style_tone,
                 default_cta=preset.default_cta if preset is not None else None,
                 target_duration_seconds=target_duration,
                 content_brain_context=content_brain_context,
@@ -968,11 +990,19 @@ class VideoProductionService:
         channel_name: str,
         video_title: str | None,
         preset: ChannelPresetRecord | None = None,
+        style_tone: str | None = None,
+        target_duration_seconds: int | None = None,
     ) -> VideoPipelineState:
         service = ScriptEngineService(session=self.session, settings=self.settings)
         content_brain_context = await self.content_brain_service.build_script_context(
             channel_slug=channel_slug,
             topic=topic,
+        )
+        effective_style_tone = style_tone if style_tone is not None else (preset.default_topic_style if preset is not None else None)
+        effective_target_duration = (
+            target_duration_seconds
+            if target_duration_seconds is not None
+            else (preset.target_duration_seconds if preset is not None else None)
         )
         result = await service.create_test_script(
             topic=topic,
@@ -980,16 +1010,16 @@ class VideoProductionService:
             channel_name=preset.channel_name if preset is not None else channel_name,
             video_title=video_title,
             execution_mode=VideoExecutionMode.REAL,
-            style_tone=preset.default_topic_style if preset is not None else None,
+            style_tone=effective_style_tone,
             default_call_to_action=preset.default_cta if preset is not None else None,
-            target_duration_seconds=preset.target_duration_seconds if preset is not None else None,
+            target_duration_seconds=effective_target_duration,
             content_brain_context=content_brain_context,
         )
         statement = select(Video).options(selectinload(Video.channel), selectinload(Video.asset)).where(Video.id == result.video_id)
         video = await self.session.scalar(statement)
         if video is None:
             raise ValueError(f"Video {result.video_id} not found")
-        video.target_duration_seconds = preset.target_duration_seconds if preset is not None else video.target_duration_seconds
+        video.target_duration_seconds = effective_target_duration if effective_target_duration is not None else video.target_duration_seconds
         preset_asset = await self._get_asset_by_slug(preset.default_asset_slug) if preset and preset.default_asset_slug else None
         if preset_asset is not None:
             self.asset_service._ensure_supported_background_asset(
@@ -1204,15 +1234,7 @@ class VideoProductionService:
         content_brain_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         topic_text = topic.strip() or "o tema"
-        hook = f"Voce ja viu {topic_text} por este angulo?"
-        body_count = 3 + int(hashlib.sha256(topic_text.encode("utf-8")).hexdigest()[:2], 16) % 3
-        body_templates = [
-            f"Primeiro, simplifique {topic_text} em uma ideia central que a audiencia entenda sem esforco.",
-            "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
-            "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
-            f"Se precisar de mais contexto, conecte {topic_text} a um exemplo simples do dia a dia.",
-            "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
-        ]
+        viral_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds)
         winning_patterns = []
         weak_patterns = []
         if isinstance(content_brain_context, dict):
@@ -1241,41 +1263,66 @@ class VideoProductionService:
             unicodedata.normalize("NFKD", tag).encode("ascii", "ignore").decode("ascii").lower().strip()
             for tag in weak_tags
         }
-        if "curiosidade" in normalized_winning_tags:
-            hook = f"Voce ja percebeu essa curiosidade sobre {topic_text}?"
-        elif winning_tags:
-            hook = f"Esse padrao vencedor sobre {topic_text} chama atencao rapido."
-        if any(tag in {"generico", "generic"} for tag in normalized_weak_tags):
-            body_blocks = [
-                f"Abra com um exemplo concreto de {topic_text} para evitar uma introducao generica.",
-                f"Mostre um caso real que torne {topic_text} facil de imaginar.",
-                "Feche com uma acao objetiva em vez de uma explicacao longa e abstrata.",
-            ]
+        if viral_mode:
+            hook = _viral_micro_short_hook(topic_text)
+            body_blocks = _viral_micro_short_body_blocks(topic_text)
+            call_to_action = ""
+            if isinstance(target_duration_seconds, int) and target_duration_seconds > 0:
+                estimated_duration_seconds = max(
+                    6,
+                    min(target_duration_seconds, _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS),
+                )
+            else:
+                estimated_duration_seconds = _VIRAL_MICRO_SHORT_DEFAULT_DURATION_SECONDS
+            style_tone = _VIRAL_MICRO_SHORT_STYLE
         else:
-            body_blocks = body_templates[:body_count]
-        if winning_tags:
-            body_blocks[-1] = f"Feche reforcando o padrao vencedor de {', '.join(winning_tags[:2])} para manter o ritmo."
-        call_to_action = default_cta or (
-            "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
-        )
-        if "cta" in normalized_winning_tags:
-            call_to_action = "Se isso fez sentido, salva e manda para quem precisa ver esse atalho."
-        estimated_duration_seconds = target_duration_seconds if target_duration_seconds is not None else 24 + len(body_blocks) * 6
-        script_text = "\n\n".join([hook, *body_blocks, call_to_action])
+            hook = f"Voce ja viu {topic_text} por este angulo?"
+            body_count = 3 + int(hashlib.sha256(topic_text.encode("utf-8")).hexdigest()[:2], 16) % 3
+            body_templates = [
+                f"Primeiro, simplifique {topic_text} em uma ideia central que a audiencia entenda sem esforco.",
+                "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
+                "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
+                f"Se precisar de mais contexto, conecte {topic_text} a um exemplo simples do dia a dia.",
+                "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
+            ]
+            if "curiosidade" in normalized_winning_tags:
+                hook = f"Voce ja percebeu essa curiosidade sobre {topic_text}?"
+            elif winning_tags:
+                hook = f"Esse padrao vencedor sobre {topic_text} chama atencao rapido."
+            if any(tag in {"generico", "generic"} for tag in normalized_weak_tags):
+                body_blocks = [
+                    f"Abra com um exemplo concreto de {topic_text} para evitar uma introducao generica.",
+                    f"Mostre um caso real que torne {topic_text} facil de imaginar.",
+                    "Feche com uma acao objetiva em vez de uma explicacao longa e abstrata.",
+                ]
+            else:
+                body_blocks = body_templates[:body_count]
+            if winning_tags:
+                body_blocks[-1] = f"Feche reforcando o padrao vencedor de {', '.join(winning_tags[:2])} para manter o ritmo."
+            call_to_action = default_cta or (
+                "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+            )
+            if "cta" in normalized_winning_tags:
+                call_to_action = "Se isso fez sentido, salva e manda para quem precisa ver esse atalho."
+            estimated_duration_seconds = target_duration_seconds if target_duration_seconds is not None else 24 + len(body_blocks) * 6
+        script_text = _build_consolidated_script_text(hook, body_blocks, call_to_action)
         applied_reason_tags = []
         applied_reason_tags.extend(winning_tags[:3])
         for tag in weak_tags:
             if tag not in applied_reason_tags:
                 applied_reason_tags.append(tag)
+        beats = ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))]]
+        if call_to_action.strip():
+            beats.append("cta")
         return {
             "title": f"Roteiro curto: {topic_text}",
             "hook": hook,
             "body_blocks": body_blocks,
             "call_to_action": call_to_action,
             "estimated_duration_seconds": estimated_duration_seconds,
-            "style_tone": style_tone or "didatico e direto",
+            "style_tone": style_tone or ("viral_micro_short" if viral_mode else "didatico e direto"),
             "script": script_text,
-            "beats": ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))], "cta"],
+            "beats": beats,
             "content_brain_context_used": bool(winning_patterns or weak_patterns),
             "winning_signals_count": len(winning_patterns),
             "weak_signals_count": len(weak_patterns),

@@ -184,6 +184,7 @@ const DEFAULT_UPLOAD_FORM = {
 };
 
 const DEFAULT_VISUAL_TEMPLATE = "default";
+const DEFAULT_CREATE_STYLE_TONE = "auto";
 
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -279,6 +280,8 @@ export default function DashboardPage() {
   const [channelSlug, setChannelSlug] = useState(DEFAULT_FORM.channelSlug);
   const [channelName, setChannelName] = useState(DEFAULT_FORM.channelName);
   const [videoTitle, setVideoTitle] = useState(DEFAULT_FORM.videoTitle);
+  const [createStyleTone, setCreateStyleTone] = useState(DEFAULT_CREATE_STYLE_TONE);
+  const [createTargetDurationSeconds, setCreateTargetDurationSeconds] = useState("");
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [assets, setAssets] = useState<AssetItem[]>([]);
   const [channelPresets, setChannelPresets] = useState<ChannelPresetItem[]>([]);
@@ -788,6 +791,7 @@ export default function DashboardPage() {
   async function createFakeVideo() {
     setBusyAction("create");
     try {
+      const parsedDuration = Number.parseInt(createTargetDurationSeconds, 10);
       const created = await requestJson<VideoItem>(apiBaseUrl, "/internal/videos/test", {
         method: "POST",
         body: JSON.stringify({
@@ -796,6 +800,8 @@ export default function DashboardPage() {
           channel_name: channelName,
           video_title: videoTitle,
           execution_mode: "fake",
+          style_tone: createStyleTone === "auto" ? undefined : createStyleTone,
+          target_duration_seconds: Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : undefined,
         }),
       });
       mergeVideo(created);
@@ -1469,11 +1475,29 @@ export default function DashboardPage() {
               <span>Titulo do video</span>
               <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} />
             </label>
+            <label className="field">
+              <span>Modo do roteiro</span>
+              <select value={createStyleTone} onChange={(event) => setCreateStyleTone(event.target.value)}>
+                <option value="auto">auto (usa preset/duracao)</option>
+                <option value="didatico e direto">didatico e direto</option>
+                <option value="viral_micro_short">viral_micro_short</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Duracao curta alvo em segundos</span>
+              <input
+                inputMode="numeric"
+                placeholder="opcional"
+                value={createTargetDurationSeconds}
+                onChange={(event) => setCreateTargetDurationSeconds(event.target.value)}
+              />
+            </label>
           </div>
 
           <button type="button" className="primary" onClick={createFakeVideo} disabled={busyAction !== null}>
             {busyAction === "create" ? "Criando..." : "Criar video fake"}
           </button>
+          <p className="helper">Auto usa o preset do canal; duracao ate 15s ativa o modo viral curto.</p>
 
           <div className="panel-header spaced" id="channel-presets">
             <h2>2. Preset do canal</h2>

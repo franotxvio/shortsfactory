@@ -109,6 +109,8 @@ class VideoCreateRequest(BaseModel):
     channel_name: str = Field(default="Internal Test", min_length=3, max_length=255)
     video_title: str | None = Field(default=None, max_length=255)
     execution_mode: VideoExecutionMode = Field(default=VideoExecutionMode.FAKE)
+    style_tone: str | None = Field(default=None, max_length=255)
+    target_duration_seconds: int | None = Field(default=None, ge=1, le=3_600)
 
 
 class VideoStepRequest(BaseModel):

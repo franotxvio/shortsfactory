@@ -35,6 +35,77 @@ def _hash_content(*parts: str) -> str:
     return digest.hexdigest()
 
 
+_VIRAL_MICRO_SHORT_STYLE = "viral_micro_short"
+_VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS = 15
+_VIRAL_MICRO_SHORT_DEFAULT_DURATION_SECONDS = 12
+
+
+def _normalize_style_tone_value(value: str | None) -> str:
+    return _normalize_reason_tag(value or "")
+
+
+def _is_viral_micro_short_mode(style_tone: str | None, target_duration_seconds: int | None) -> bool:
+    normalized_style = _normalize_style_tone_value(style_tone)
+    if normalized_style in {
+        _VIRAL_MICRO_SHORT_STYLE,
+        "viral",
+        "micro_short",
+        "microshort",
+        "short_viral",
+    }:
+        return True
+    return isinstance(target_duration_seconds, int) and 0 < target_duration_seconds <= _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS
+
+
+def _short_topic_label(topic: str) -> str:
+    topic_text = topic.strip() or "o tema"
+    normalized = unicodedata.normalize("NFKD", topic_text).encode("ascii", "ignore").decode("ascii").lower()
+    for prefix in (
+        "como aprender ",
+        "como fazer ",
+        "como ",
+        "aprenda ",
+        "aprendendo ",
+        "tutorial de ",
+        "guia de ",
+    ):
+        if normalized.startswith(prefix):
+            topic_text = topic_text[len(prefix) :]
+            break
+    topic_text = re.split(r"\s+(?:vs|versus|contra|x)\s+|/", topic_text, maxsplit=1, flags=re.IGNORECASE)[0]
+    topic_text = topic_text.strip(" -:;,.")
+    return topic_text or "o tema"
+
+
+def _viral_micro_short_hook(topic: str) -> str:
+    topic_label = _short_topic_label(topic)
+    if len(topic_label) <= 18:
+        return f"Seu primeiro erro em {topic_label}:"
+    if len(topic_label) <= 28:
+        return f"{topic_label}:"
+    words = topic_label.split()
+    if len(words) >= 2:
+        return f"{' '.join(words[:2])}:"
+    return f"{topic_label[:24].strip()}:"
+
+
+def _viral_micro_short_body_blocks(topic: str) -> list[str]:
+    topic_label = _short_topic_label(topic)
+    topic_lower = topic_label.lower()
+    return [
+        "voce tenta decorar tudo.",
+        "mas quem progride testa primeiro.",
+        f"menos teoria, mais {topic_lower} na pratica.",
+    ]
+
+
+def _build_beats(body_blocks: list[str], call_to_action: str) -> list[str]:
+    beats = ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))]]
+    if call_to_action.strip():
+        beats.append("cta")
+    return beats
+
+
 def _coerce_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -77,32 +148,58 @@ def _normalize_script_payload(
     target_duration_seconds: int | None = None,
 ) -> dict[str, object]:
     title = str(payload.get("title") or f"Roteiro curto: {topic}").strip()
-    hook = str(payload.get("hook") or hook_text or f"Voce ja viu {topic} por este angulo?").strip()
-    body_blocks = _coerce_string_list(payload.get("body_blocks"))
-    if not body_blocks:
-        script_text = str(payload.get("script") or "").strip()
-        if script_text:
-            split_blocks = [part.strip() for part in re.split(r"(?<=[.!?])\s+", script_text) if part.strip()]
-            body_blocks = split_blocks[:5]
-    if len(body_blocks) < 3:
-        defaults = _default_body_blocks(topic)
-        body_blocks.extend(defaults[len(body_blocks) : 3])
-    body_blocks = body_blocks[:5]
-
-    call_to_action = str(
-        default_call_to_action
-        or payload.get("call_to_action")
-        or payload.get("cta")
-        or "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
-    ).strip()
     style_tone = str(style_tone or payload.get("style_tone") or payload.get("tone") or "didatico e direto").strip()
-    estimated_duration_raw = payload.get("estimated_duration_seconds")
-    if isinstance(target_duration_seconds, int) and target_duration_seconds > 0:
-        estimated_duration_seconds = target_duration_seconds
-    elif isinstance(estimated_duration_raw, int) and estimated_duration_raw > 0:
-        estimated_duration_seconds = estimated_duration_raw
+    viral_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds)
+
+    if viral_mode:
+        hook = str(payload.get("hook") or hook_text or _viral_micro_short_hook(topic)).strip()
+        if len(hook) > 40:
+            hook = _viral_micro_short_hook(topic)
+        body_blocks = _coerce_string_list(payload.get("body_blocks"))
+        if not body_blocks:
+            script_text = str(payload.get("script") or "").strip()
+            if script_text:
+                split_blocks = [part.strip() for part in re.split(r"(?<=[.!?])\s+", script_text) if part.strip()]
+                body_blocks = split_blocks[:3]
+        if len(body_blocks) < 3:
+            defaults = _viral_micro_short_body_blocks(topic)
+            body_blocks.extend(defaults[len(body_blocks) : 3])
+        body_blocks = body_blocks[:5]
+        call_to_action = str(payload.get("call_to_action") or payload.get("cta") or "").strip()
+        if isinstance(target_duration_seconds, int) and target_duration_seconds > 0:
+            estimated_duration_seconds = max(
+                6,
+                min(target_duration_seconds, _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS),
+            )
+        else:
+            estimated_duration_seconds = _VIRAL_MICRO_SHORT_DEFAULT_DURATION_SECONDS
+        style_tone = _VIRAL_MICRO_SHORT_STYLE
     else:
-        estimated_duration_seconds = max(18, 12 + len(body_blocks) * 6)
+        hook = str(payload.get("hook") or hook_text or f"Voce ja viu {topic} por este angulo?").strip()
+        body_blocks = _coerce_string_list(payload.get("body_blocks"))
+        if not body_blocks:
+            script_text = str(payload.get("script") or "").strip()
+            if script_text:
+                split_blocks = [part.strip() for part in re.split(r"(?<=[.!?])\s+", script_text) if part.strip()]
+                body_blocks = split_blocks[:5]
+        if len(body_blocks) < 3:
+            defaults = _default_body_blocks(topic)
+            body_blocks.extend(defaults[len(body_blocks) : 3])
+        body_blocks = body_blocks[:5]
+
+        call_to_action = str(
+            default_call_to_action
+            or payload.get("call_to_action")
+            or payload.get("cta")
+            or "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+        ).strip()
+        estimated_duration_raw = payload.get("estimated_duration_seconds")
+        if isinstance(target_duration_seconds, int) and target_duration_seconds > 0:
+            estimated_duration_seconds = target_duration_seconds
+        elif isinstance(estimated_duration_raw, int) and estimated_duration_raw > 0:
+            estimated_duration_seconds = estimated_duration_raw
+        else:
+            estimated_duration_seconds = max(18, 12 + len(body_blocks) * 6)
 
     script_text = str(payload.get("script") or "").strip()
     if not script_text:
@@ -110,7 +207,7 @@ def _normalize_script_payload(
 
     beats = _coerce_string_list(payload.get("beats"))
     if not beats:
-        beats = ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))], "cta"]
+        beats = _build_beats(body_blocks, call_to_action)
 
     return {
         "title": title,
@@ -163,26 +260,47 @@ class _DeterministicLLMClient:
         elif "script" in prompt_lower:
             topic_match = re.search(r'about "(.+?)"', payload.user_prompt)
             topic = topic_match.group(1).strip() if topic_match else "o tema"
-            body_count = 3 + int(hashlib.sha256(topic.encode("utf-8")).hexdigest()[:2], 16) % 3
-            body_templates = [
-                f"Primeiro, simplifique {topic} em uma ideia central que a pessoa entenda sem esforço.",
-                "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
-                "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
-                f"Se quiser dar mais profundidade, conecte {topic} a um exemplo simples do dia a dia.",
-                "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
-            ]
-            body_blocks = body_templates[:body_count]
-            hook = f"Voce ja viu {topic} por este angulo?"
-            call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+            user_prompt_lower = payload.user_prompt.lower()
+            duration_match = re.search(r"target duration seconds:\s*(\d+)", user_prompt_lower)
+            duration_seconds = int(duration_match.group(1)) if duration_match is not None else None
+            viral_mode = "viral_micro_short" in user_prompt_lower or (
+                duration_seconds is not None and duration_seconds <= _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS
+            )
+            if viral_mode:
+                hook = _viral_micro_short_hook(topic)
+                body_blocks = _viral_micro_short_body_blocks(topic)
+                call_to_action = ""
+                estimated_duration_seconds = max(
+                    6,
+                    min(
+                        duration_seconds if duration_seconds is not None else _VIRAL_MICRO_SHORT_DEFAULT_DURATION_SECONDS,
+                        _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS,
+                    ),
+                )
+                style_tone = _VIRAL_MICRO_SHORT_STYLE
+            else:
+                body_count = 3 + int(hashlib.sha256(topic.encode("utf-8")).hexdigest()[:2], 16) % 3
+                body_templates = [
+                    f"Primeiro, simplifique {topic} em uma ideia central que a pessoa entenda sem esforco.",
+                    "Depois, mostre um passo pratico para transformar a explicacao em acao imediata.",
+                    "Em seguida, destaque o ganho direto para deixar claro por que isso importa agora.",
+                    f"Se quiser dar mais profundidade, conecte {topic} a um exemplo simples do dia a dia.",
+                    "Feche reforcando o proximo passo mais facil para a audiencia agir hoje.",
+                ]
+                body_blocks = body_templates[:body_count]
+                hook = f"Voce ja viu {topic} por este angulo?"
+                call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
+                estimated_duration_seconds = 24 + len(body_blocks) * 6
+                style_tone = "didatico e direto"
             content = {
                 "title": f"Roteiro curto: {topic}",
                 "hook": hook,
                 "body_blocks": body_blocks,
                 "call_to_action": call_to_action,
-                "estimated_duration_seconds": 24 + len(body_blocks) * 6,
-                "style_tone": "didatico e direto",
+                "estimated_duration_seconds": estimated_duration_seconds,
+                "style_tone": style_tone,
                 "script": _build_consolidated_script_text(hook, body_blocks, call_to_action),
-                "beats": ["hook", *[f"body_{index + 1}" for index in range(len(body_blocks))], "cta"],
+                "beats": _build_beats(body_blocks, call_to_action),
             }
         else:
             content = {
@@ -227,6 +345,8 @@ class ScriptEngineService:
     ) -> ScriptGenerationResult:
         llm_client, provider_name, record_cost_logs = self._get_llm_client(execution_mode)
         content_brain_summary = self._normalize_content_brain_context(content_brain_context)
+        viral_micro_short_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds)
+        effective_default_call_to_action = None if viral_micro_short_mode else default_call_to_action
         async with self.session.begin():
             channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name)
 
@@ -240,16 +360,16 @@ class ScriptEngineService:
                 provider_name=provider_name,
                 record_cost_logs=record_cost_logs,
                 style_tone=style_tone,
-                default_call_to_action=default_call_to_action,
+                default_call_to_action=effective_default_call_to_action,
                 target_duration_seconds=target_duration_seconds,
                 content_brain_context=content_brain_summary,
             )
-            if execution_mode == VideoExecutionMode.FAKE and content_brain_summary is not None:
+            if execution_mode == VideoExecutionMode.FAKE and content_brain_summary is not None and not viral_micro_short_mode:
                 applied_script, applied_tags = self._apply_content_brain_context_to_script(
                     script_content=dict(script.content),
                     topic=topic,
                     content_brain_context=content_brain_summary,
-                    default_call_to_action=default_call_to_action,
+                    default_call_to_action=effective_default_call_to_action,
                     style_tone=style_tone,
                     target_duration_seconds=target_duration_seconds,
                 )
@@ -405,6 +525,12 @@ class ScriptEngineService:
     ) -> LLMResult:
         idea_text = str(idea.content.get("idea") or "")
         hook_text = str(hook.content.get("hook") or "")
+        viral_micro_short_guidance = ""
+        if _is_viral_micro_short_mode(style_tone, target_duration_seconds):
+            viral_micro_short_guidance = (
+                " Viral micro short mode: keep the hook strong in the first 1-2 seconds, "
+                "use 3 to 5 very short body blocks, make the CTA optional or empty, and keep the final duration between 6 and 15 seconds."
+            )
         content_brain_context_text = ""
         if content_brain_context:
             winning_patterns = content_brain_context.get("winning_patterns") or content_brain_context.get("winning_examples")
@@ -444,6 +570,7 @@ class ScriptEngineService:
                 f"{f'Style tone: {style_tone!r}. ' if style_tone else ''}"
                 f"{f'Default CTA: {default_call_to_action!r}. ' if default_call_to_action else ''}"
                 f"{f'Target duration seconds: {target_duration_seconds}. ' if target_duration_seconds else ''}"
+                f"{viral_micro_short_guidance}"
                 f"{content_brain_context_text}"
                 "Return JSON with keys title, hook, body_blocks, call_to_action, estimated_duration_seconds, style_tone, script and beats. "
                 "Use 3 to 5 short body_blocks and keep the final script concise enough for a Shorts video."

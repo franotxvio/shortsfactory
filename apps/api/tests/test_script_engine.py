@@ -321,6 +321,30 @@ async def test_fake_script_engine_applies_preset_defaults(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_fake_script_engine_supports_viral_micro_short_mode(db_session) -> None:
+    service = ScriptEngineService(session=db_session)
+    result = await service.create_test_script(
+        topic="Programador iniciante vs tester",
+        channel_slug="viral-channel",
+        channel_name="Viral Channel",
+        video_title="Teste viral",
+        style_tone="viral_micro_short",
+        target_duration_seconds=12,
+    )
+
+    assert result.script_status == "approved"
+    assert result.style_tone == "viral_micro_short"
+    assert result.estimated_duration_seconds is not None
+    assert result.estimated_duration_seconds <= 15
+    assert result.body_blocks is not None
+    assert len(result.body_blocks) <= 5
+    assert len(result.body_blocks) == 3
+    assert result.hook is not None and len(result.hook) <= 40 and result.hook.endswith(":")
+    assert result.call_to_action in {None, "", " "}
+    assert "menos teoria" in (result.script_text or "")
+
+
+@pytest.mark.asyncio
 async def test_real_script_engine_without_api_key_fails_clear(db_session) -> None:
     service = ScriptEngineService(session=db_session, settings=Settings(llm_provider=LLMProvider.OPENAI))
 

@@ -591,6 +591,32 @@ async def test_create_local_test_video_applies_channel_preset_defaults(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_create_local_test_video_supports_viral_micro_short_mode(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    result = await service.create_local_test_video(
+        topic="Programador iniciante vs tester",
+        channel_slug="viral-channel",
+        channel_name="Viral Channel",
+        video_title="Teste viral",
+        execution_mode=VideoExecutionMode.FAKE,
+        style_tone="viral_micro_short",
+        target_duration_seconds=12,
+    )
+
+    assert result.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+    assert result.style_tone == "viral_micro_short"
+    assert result.target_duration_seconds == 12
+    assert result.estimated_duration_seconds is not None
+    assert result.estimated_duration_seconds <= 15
+    assert result.body_blocks is not None
+    assert len(result.body_blocks) == 3
+    assert result.call_to_action == ""
+    assert result.hook is not None and len(result.hook) <= 40 and result.hook.endswith(":")
+
+
+@pytest.mark.asyncio
 async def test_create_local_test_video_falls_back_without_preset(db_session, tmp_path) -> None:
     settings = _build_preset_settings(tmp_path)
     service = VideoProductionService(session=db_session, settings=settings)
