@@ -1,3 +1,5 @@
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,6 +10,14 @@ from app.api.routes.internal_videos import router as internal_videos_router
 from app.core.config import get_settings
 from app.core.db import close_engine, get_engine
 from app.core.redis import close_redis_client, get_redis_client
+
+
+def configure_windows_event_loop_policy() -> None:
+    if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+configure_windows_event_loop_policy()
 
 
 @asynccontextmanager
