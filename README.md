@@ -110,6 +110,12 @@ Run the manual HTTP pipeline script:
 python scripts/manual_video_pipeline_http.py
 ```
 
+Run the full local smoke demo:
+
+```bash
+python scripts/smoke_demo_local.py --base-url http://127.0.0.1:8000
+```
+
 Fake is the default. Real mode is only allowed when the relevant keys are present and the request explicitly asks for it.
 
 ## Documentation

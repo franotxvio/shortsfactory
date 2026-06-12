@@ -204,11 +204,19 @@ Use o script local para executar o fluxo fake completo contra a API:
 python scripts/manual_video_pipeline_http.py
 ```
 
+Smoke demo local completo:
+
+```bash
+python scripts/smoke_demo_local.py --base-url http://127.0.0.1:8000
+```
+
 Modo real controlado:
 
 ```bash
 python scripts/manual_video_pipeline_http.py --mode real
 ```
+
+Opcionalmente, o smoke aceita `--skip-reset` para pular o reset da demo local antes de iniciar o fluxo.
 
 O script imprime:
 
@@ -283,4 +291,3 @@ Regras:
 - somente fora de `production`
 - exige `confirm=true`
 - remove videos demo/local dos canais `internal-test` e `manual-test`
-
