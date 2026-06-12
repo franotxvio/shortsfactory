@@ -123,6 +123,51 @@ textarea:focus {
   align-items: start;
 }
 
+.dashboard-toc {
+  position: sticky;
+  top: 12px;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(5, 8, 20, 0.82);
+  backdrop-filter: blur(14px);
+}
+
+.dashboard-toc a {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  background: rgba(8, 17, 31, 0.5);
+  color: #cffafe;
+  text-decoration: none;
+  font-size: 0.86rem;
+  transition:
+    transform 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.dashboard-toc a:hover {
+  transform: translateY(-1px);
+  border-color: rgba(103, 232, 249, 0.52);
+  background: rgba(8, 17, 31, 0.78);
+}
+
+#create-video,
+#channel-presets {
+  scroll-margin-top: 92px;
+}
+
+#pipeline-overview {
+  scroll-margin-top: 92px;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: var(--accent);
@@ -444,6 +489,7 @@ textarea:focus {
   border-radius: 22px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   background: rgba(2, 6, 23, 0.18);
+  scroll-margin-top: 92px;
 }
 
 .section-header {
@@ -674,5 +720,10 @@ textarea:focus {
 
   .asset-form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-toc {
+    top: 8px;
+    gap: 8px;
   }
 }

@@ -1427,9 +1427,20 @@ export default function DashboardPage() {
         </div>
       </section>
 
+      <nav className="dashboard-toc" aria-label="Atalhos da demonstração local">
+        <a href="#create-video">Criar vídeo</a>
+        <a href="#channel-presets">Presets</a>
+        <a href="#selected-video">Vídeo selecionado</a>
+        <a href="#script-section">Roteiro</a>
+        <a href="#pipeline-section">Pipeline</a>
+        <a href="#assets-section">Assets</a>
+        <a href="#export-section">Export / YouTube</a>
+        <a href="#content-brain-section">ContentBrain</a>
+      </nav>
+
       <section className="grid">
         <aside className="panel">
-          <div className="panel-header">
+          <div className="panel-header" id="create-video">
             <h2>1. Criar vídeo</h2>
             <span className="panel-hint">execution_mode = fake</span>
           </div>
@@ -1464,7 +1475,7 @@ export default function DashboardPage() {
             {busyAction === "create" ? "Criando..." : "Criar video fake"}
           </button>
 
-          <div className="panel-header spaced">
+          <div className="panel-header spaced" id="channel-presets">
             <h2>2. Preset do canal</h2>
             <span className="panel-hint">{channelPresets.length} itens salvos</span>
           </div>
@@ -1539,7 +1550,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="panel-header spaced">
+          <div className="panel-header spaced" id="pipeline-overview">
             <h2>5. Pipeline</h2>
             <span className="panel-hint">video selecionado</span>
           </div>
@@ -1639,7 +1650,7 @@ export default function DashboardPage() {
         </section>
       </section>
 
-      <section className="panel detail-panel">
+      <section className="panel detail-panel" id="selected-video">
         <div className="panel-header">
           <h2>3. Vídeo selecionado</h2>
           <span className="panel-hint">{selectedVideo ? `Video #${selectedVideo.video_id}` : "Nenhum selecionado"}</span>
@@ -1647,7 +1658,7 @@ export default function DashboardPage() {
 
         {selectedVideo ? (
           <div className="detail-grid">
-            <section className="detail-section">
+            <section className="detail-section" id="selected-video-summary">
               <div className="section-header">
                 <div>
                   <p className="section-kicker">3</p>
@@ -1751,7 +1762,7 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <section className="detail-section">
+            <section className="detail-section" id="script-section">
               <div className="section-header">
                 <div>
                   <p className="section-kicker">4</p>
@@ -1776,7 +1787,7 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <section className="detail-section">
+            <section className="detail-section" id="pipeline-section">
               <div className="section-header">
                 <div>
                   <p className="section-kicker">5</p>
@@ -1916,7 +1927,7 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <section className="detail-section">
+            <section className="detail-section" id="assets-section">
               <div className="section-header">
                 <div>
                   <p className="section-kicker">6</p>
@@ -2095,7 +2106,7 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <section className="detail-section">
+            <section className="detail-section" id="export-section">
               <div className="section-header">
                 <div>
                   <p className="section-kicker">7</p>
@@ -2277,7 +2288,7 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <section className="detail-section">
+            <section className="detail-section" id="content-brain-section">
               <div className="section-header">
                 <div>
                   <p className="section-kicker">8</p>
