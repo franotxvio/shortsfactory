@@ -102,6 +102,24 @@ type VideoJobItem = {
   visual_template?: string | null;
 };
 
+type PublishReadinessCheckItem = {
+  key: string;
+  label: string;
+  ready: boolean;
+  value?: string | null;
+};
+
+type PublishReadinessResponse = {
+  video_id: number;
+  video_slug?: string | null;
+  channel_slug?: string | null;
+  stage_status?: string | null;
+  overall_status: string;
+  ready: boolean;
+  missing_items: string[];
+  items: PublishReadinessCheckItem[];
+};
+
 type ContentBrainSignalItem = {
   video_id: number;
   video_slug?: string | null;
@@ -249,6 +267,7 @@ export default function DashboardPage() {
   const [channelPresets, setChannelPresets] = useState<ChannelPresetItem[]>([]);
   const [contentBrainSignals, setContentBrainSignals] = useState<ContentBrainSignalItem[]>([]);
   const [latestJob, setLatestJob] = useState<VideoJobItem | null>(null);
+  const [publishReadiness, setPublishReadiness] = useState<PublishReadinessResponse | null>(null);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const selectedVideoIdRef = useRef<number | null>(null);
   const channelSlugRef = useRef(DEFAULT_FORM.channelSlug);
@@ -321,6 +340,7 @@ export default function DashboardPage() {
     selectedVideo?.stage_status === "final_rendered" || selectedVideo?.status === "completed";
   const exportPackageReady = Boolean(selectedVideo && selectedVideo.stage_status === "final_rendered");
   const youtubePrepReady = Boolean(selectedVideo && selectedVideo.stage_status === "final_rendered");
+  const publishReady = publishReadiness?.overall_status === "ready";
   const previewNeedsRefresh = Boolean(
     selectedVideo &&
       selectedVideo.preview_path &&
@@ -554,6 +574,33 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const loadPublishReadiness = useCallback(async (videoId: number | null, options?: { baseUrl?: string; quiet?: boolean }) => {
+    if (videoId === null) {
+      setPublishReadiness(null);
+      return;
+    }
+    const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
+    const quiet = options?.quiet ?? false;
+    try {
+      const payload = await requestJson<PublishReadinessResponse>(baseUrl, `/internal/videos/${videoId}/publish-readiness`);
+      setPublishReadiness(payload);
+      if (!quiet) {
+        setMessage({
+          kind: "success",
+          text: payload.ready ? "Checklist de publicacao completo." : "Checklist de publicacao atualizado com itens pendentes.",
+        });
+      }
+    } catch (error) {
+      setPublishReadiness(null);
+      if (!quiet) {
+        setMessage({
+          kind: "error",
+          text: error instanceof Error ? error.message : "Falha ao carregar checklist de publicacao.",
+        });
+      }
+    }
+  }, []);
+
   const loadVideos = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
     const quiet = options?.quiet ?? false;
@@ -576,6 +623,7 @@ export default function DashboardPage() {
       setLatestJob(null);
       void loadContentBrainSignals({ quiet: true });
       void loadLatestJob(nextSelectedId, { quiet: true });
+      void loadPublishReadiness(nextSelectedId, { quiet: true });
       if (!quiet) {
         setMessage({ kind: "success", text: `Foram carregados ${items.length} videos.` });
       }
@@ -586,7 +634,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadContentBrainSignals, loadLatestJob, syncPerformanceForm, syncYoutubePrepForm]);
+  }, [loadContentBrainSignals, loadLatestJob, loadPublishReadiness, syncPerformanceForm, syncYoutubePrepForm]);
 
   const loadAssets = useCallback(async (options?: { baseUrl?: string; quiet?: boolean }) => {
     const baseUrl = options?.baseUrl ?? apiBaseUrlRef.current;
@@ -643,6 +691,7 @@ export default function DashboardPage() {
     setPendingAssetId(null);
     setLatestJob(null);
     void loadLatestJob(nextVideo.video_id, { quiet: true });
+    void loadPublishReadiness(nextVideo.video_id, { quiet: true });
   }
 
   function selectVideo(video: VideoItem) {
@@ -655,6 +704,7 @@ export default function DashboardPage() {
     setPendingAssetId(null);
     setLatestJob(null);
     void loadLatestJob(video.video_id, { quiet: true });
+    void loadPublishReadiness(video.video_id, { quiet: true });
   }
 
   async function createFakeVideo() {
@@ -673,6 +723,7 @@ export default function DashboardPage() {
       mergeVideo(created);
       setMessage({ kind: "success", text: `Video ${created.video_id} criado em modo fake.` });
       void loadVideos({ quiet: true });
+      void loadPublishReadiness(created.video_id, { quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao criar video fake." });
     } finally {
@@ -706,6 +757,7 @@ export default function DashboardPage() {
       mergeVideo(produced);
       setMessage({ kind: "success", text: `Pipeline concluido para o video ${selectedVideoId}.` });
       void loadVideos({ quiet: true });
+      void loadPublishReadiness(selectedVideoId, { quiet: true });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao rodar o pipeline fake." });
     } finally {
@@ -747,6 +799,7 @@ export default function DashboardPage() {
     try {
       const updated = await requestJson<VideoItem>(apiBaseUrl, `/internal/videos/${selectedVideoId}/status`);
       mergeVideo(updated);
+      void loadPublishReadiness(updated.video_id, { quiet: true });
       setMessage({ kind: "success", text: `Status atualizado para o video ${selectedVideoId}.` });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Falha ao consultar status." });
@@ -791,6 +844,7 @@ export default function DashboardPage() {
       });
       mergeVideo(updated);
       setScriptDraft(buildScriptDraft(updated));
+      void loadPublishReadiness(updated.video_id, { quiet: true });
       setMessage({ kind: "success", text: `Roteiro do video ${selectedVideoId} salvo com sucesso.` });
       void loadVideos({ quiet: true });
     } catch (error) {
@@ -820,6 +874,7 @@ export default function DashboardPage() {
       setPerformanceLabel(updated.performance_label ?? "unknown");
       setPerformanceNotes(updated.performance_notes ?? "");
       setPerformanceReasonTagsText(buildPerformanceReasonTagsText(updated));
+      void loadPublishReadiness(updated.video_id, { quiet: true });
       setMessage({ kind: "success", text: `Sinal do video ${selectedVideoId} atualizado para ${updated.performance_label ?? "unknown"}.` });
       void loadVideos({ quiet: true });
       void loadContentBrainSignals({ quiet: true });
@@ -850,6 +905,7 @@ export default function DashboardPage() {
         });
         mergeVideo(updated);
         setPendingAssetId(null);
+        void loadPublishReadiness(updated.video_id, { quiet: true });
         if (!options?.quiet) {
           setMessage({ kind: "success", text: `Asset ${asset.name} aplicado ao video ${selectedVideoId}.` });
         }
@@ -1171,6 +1227,7 @@ export default function DashboardPage() {
       });
       mergeVideo(updated);
       setPendingAssetId(null);
+      void loadPublishReadiness(updated.video_id, { quiet: true });
       setMessage({ kind: "success", text: `Preview regenerado com sucesso para o video ${selectedVideoId}.` });
       void loadVideos({ quiet: true });
       void loadAssets({ quiet: true });
@@ -1200,6 +1257,7 @@ export default function DashboardPage() {
         method: "POST",
       });
       mergeVideo(updated);
+      void loadPublishReadiness(updated.video_id, { quiet: true });
       setMessage({ kind: "success", text: `Pacote de export gerado para o video ${selectedVideoId}.` });
       void loadVideos({ quiet: true });
     } catch (error) {
@@ -1233,6 +1291,7 @@ export default function DashboardPage() {
       });
       mergeVideo(updated);
       syncYoutubePrepForm(updated);
+      void loadPublishReadiness(updated.video_id, { quiet: true });
       setMessage({ kind: "success", text: `YouTube Prep salvo para o video ${selectedVideoId}.` });
       void loadVideos({ quiet: true });
     } catch (error) {
@@ -1869,6 +1928,51 @@ export default function DashboardPage() {
                 </p>
               ) : (
                 <p className="helper">Salve o JSON local depois do render final para preparar a publicacao manualmente.</p>
+              )}
+            </div>
+
+            <div className="asset-form">
+              <div className="panel-header">
+                <h3>Pronto para publicar?</h3>
+                <div className="badges">
+                  <span className={`badge ${publishReady ? "success" : "warning"}`}>
+                    {publishReady ? "ready" : "missing_items"}
+                  </span>
+                  <span className="panel-hint">{publishReadiness?.stage_status ?? "aguardando final render"}</span>
+                </div>
+              </div>
+              {selectedVideo?.stage_status !== "final_rendered" ? (
+                <p className="helper">O checklist so fica disponivel depois do render final e do pacote de export.</p>
+              ) : null}
+              {publishReadiness ? (
+                <div className="detail-asset">
+                  <p>
+                    <strong>Status geral:</strong> {publishReadiness.overall_status}
+                  </p>
+                  <p>
+                    <strong>Itens faltando:</strong>{" "}
+                    {publishReadiness.missing_items.length ? publishReadiness.missing_items.join(", ") : "nenhum"}
+                  </p>
+                  <div className="badge-row">
+                    {publishReadiness.items.map((item) => (
+                      <span key={item.key} className={`badge ${item.ready ? "success" : "warning"}`}>
+                        {item.ready ? "OK" : "pendente"}: {item.label}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="paths">
+                    {publishReadiness.items.map((item) => (
+                      <div key={item.key} className="path-row">
+                        <span className="path-label">{item.label}</span>
+                        <code className={`path-value${item.ready ? "" : " is-empty"}`}>
+                          {item.value ?? (item.ready ? "ok" : "pendente")}
+                        </code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="helper">Abra um video finalizado para ver o checklist de publicacao.</p>
               )}
             </div>
 

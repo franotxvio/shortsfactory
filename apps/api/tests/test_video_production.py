@@ -866,6 +866,200 @@ async def test_internal_video_youtube_prep_blocks_without_final_render(
 
 
 @pytest.mark.asyncio
+async def test_internal_video_publish_readiness_ready_when_all_artifacts_exist(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    await _create_approved_script(db_session)
+    audio_bytes = _build_mp3_bytes(tmp_path)
+    fake_tts_client = FakeTTSClient(audio_bytes=audio_bytes)
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+    tts_worker = TTSWorker(session=db_session, client=fake_tts_client, settings=settings)
+    production_service = VideoProductionService(session=db_session, settings=settings, tts_worker=tts_worker)
+
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        worker = TTSWorker(session=session, client=fake_tts_client, settings=settings)
+        return VideoProductionService(session=session, settings=settings, tts_worker=worker)
+
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+
+    result = await production_service.produce_full_video(video_id=video.id)
+    assert Path(result.final_path).exists()
+    await db_session.commit()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    original_get_settings = internal_videos_routes.get_settings
+    internal_videos_routes.get_settings = lambda: settings
+    try:
+        with TestClient(app) as client:
+            export_response = client.post(f"/internal/videos/{video.id}/export-package")
+            assert export_response.status_code == 200, export_response.text
+
+            prep_response = client.post(
+                f"/internal/videos/{video.id}/youtube-prep",
+                json={
+                    "title": "Titulo pronto",
+                    "description": "Descricao pronta",
+                    "tags": ["shorts", "python", "ready"],
+                    "visibility": "private",
+                    "made_for_kids": False,
+                },
+            )
+            assert prep_response.status_code == 200, prep_response.text
+
+            readiness_response = client.get(f"/internal/videos/{video.id}/publish-readiness")
+            assert readiness_response.status_code == 200, readiness_response.text
+            payload = readiness_response.json()
+    finally:
+        internal_videos_routes.get_settings = original_get_settings
+        app.dependency_overrides.clear()
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ready"] is True
+    assert payload["missing_items"] == []
+    assert [item["key"] for item in payload["items"]] == [
+        "final_path",
+        "export_package",
+        "export_metadata",
+        "captions",
+        "youtube_publish",
+        "title",
+        "description",
+        "tags",
+        "visibility",
+        "made_for_kids",
+        "content_brain_label",
+    ]
+    assert all(item["ready"] for item in payload["items"])
+
+
+@pytest.mark.asyncio
+async def test_internal_video_publish_readiness_missing_when_youtube_json_missing(
+    db_session,
+    temp_database_url: str,
+    tmp_path,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    await _create_approved_script(db_session)
+    audio_bytes = _build_mp3_bytes(tmp_path)
+    fake_tts_client = FakeTTSClient(audio_bytes=audio_bytes)
+
+    settings = Settings(
+        local_storage_path=tmp_path / "storage",
+        asset_pool_path=tmp_path / "storage" / "assets",
+        audio_output_path=tmp_path / "storage" / "audio",
+        caption_output_path=tmp_path / "storage" / "captions",
+        preview_output_path=tmp_path / "storage" / "renders" / "previews",
+        final_output_path=tmp_path / "storage" / "renders" / "finals",
+        whisper_model_path=tmp_path / "storage" / "models" / "missing.bin",
+        ffmpeg_path="ffmpeg",
+    )
+    tts_worker = TTSWorker(session=db_session, client=fake_tts_client, settings=settings)
+    production_service = VideoProductionService(session=db_session, settings=settings, tts_worker=tts_worker)
+
+    async def _override_video_production_service(session=Depends(get_async_session)):
+        worker = TTSWorker(session=session, client=fake_tts_client, settings=settings)
+        return VideoProductionService(session=session, settings=settings, tts_worker=worker)
+
+    video = await db_session.scalar(select(Video).where(Video.slug.like("como-aprender-python-%")))
+    assert video is not None
+
+    result = await production_service.produce_full_video(video_id=video.id)
+    assert Path(result.final_path).exists()
+    await db_session.commit()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    app.dependency_overrides[get_video_production_service] = _override_video_production_service
+    original_get_settings = internal_videos_routes.get_settings
+    internal_videos_routes.get_settings = lambda: settings
+    try:
+        with TestClient(app) as client:
+            export_response = client.post(f"/internal/videos/{video.id}/export-package")
+            assert export_response.status_code == 200, export_response.text
+
+            readiness_response = client.get(f"/internal/videos/{video.id}/publish-readiness")
+            assert readiness_response.status_code == 200, readiness_response.text
+            payload = readiness_response.json()
+    finally:
+        internal_videos_routes.get_settings = original_get_settings
+        app.dependency_overrides.clear()
+
+    assert payload["overall_status"] == "missing_items"
+    assert payload["ready"] is False
+    assert "youtube_publish" in payload["missing_items"]
+    items = {item["key"]: item for item in payload["items"]}
+    assert items["youtube_publish"]["ready"] is False
+    assert items["content_brain_label"]["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_internal_video_publish_readiness_blocks_without_final_render(
+    temp_database_url: str,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/internal/videos/test",
+                json={
+                    "topic": "Como aprender Python",
+                    "channel_slug": "manual-test",
+                    "channel_name": "Manual Test",
+                    "video_title": "Teste manual",
+                    "execution_mode": "fake",
+                },
+            )
+            assert create_response.status_code == 200
+            created = VideoPipelineResponse.model_validate(create_response.json())
+
+            readiness_response = client.get(f"/internal/videos/{created.video_id}/publish-readiness")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert readiness_response.status_code == 400
+    assert "final render" in readiness_response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_internal_video_preview_rejects_unknown_template(
     db_session,
     temp_database_url: str,

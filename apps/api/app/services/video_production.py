@@ -707,6 +707,112 @@ class VideoProductionService:
         await self.session.flush()
         return await self.get_status(video_id=video_id)
 
+    async def get_publish_readiness(self, *, video_id: int) -> dict[str, object]:
+        state = await self.get_status(video_id=video_id)
+        if state.stage_status != VideoStageStatus.FINAL_RENDERED.value:
+            raise ValueError("Publish readiness is only available after final render")
+
+        def _check_path(path_value: str | None) -> bool:
+            if not path_value:
+                return False
+            try:
+                resolved_path = self._storage_relative_to_absolute_path(path_value)
+            except ValueError:
+                return False
+            return resolved_path.exists()
+
+        final_exists = _check_path(state.final_path)
+        export_dir_exists = bool(state.export_package_dir and self._storage_relative_to_absolute_path(state.export_package_dir).exists())
+        export_metadata_exists = _check_path(state.export_metadata_path)
+        captions_exists = _check_path(state.export_caption_path)
+        youtube_publish_exists = _check_path(state.youtube_publish_path)
+        title_value = self._normalize_optional_text(state.youtube_publish_title)
+        description_value = self._normalize_optional_text(state.youtube_publish_description)
+        tags_value = [tag for tag in (state.youtube_publish_tags or []) if str(tag).strip()]
+        visibility_value = self._normalize_optional_text(state.youtube_publish_visibility)
+        made_for_kids_value = state.youtube_publish_made_for_kids
+        content_brain_label = self._normalize_optional_text(state.performance_label) or "unknown"
+
+        items = [
+            {
+                "key": "final_path",
+                "label": "final_path existe",
+                "ready": final_exists,
+                "value": state.final_path,
+            },
+            {
+                "key": "export_package",
+                "label": "export package existe",
+                "ready": export_dir_exists,
+                "value": state.export_package_dir,
+            },
+            {
+                "key": "export_metadata",
+                "label": "metadata.json existe",
+                "ready": export_metadata_exists,
+                "value": state.export_metadata_path,
+            },
+            {
+                "key": "captions",
+                "label": "captions.srt existe",
+                "ready": captions_exists,
+                "value": state.export_caption_path,
+            },
+            {
+                "key": "youtube_publish",
+                "label": "youtube_publish.json existe",
+                "ready": youtube_publish_exists,
+                "value": state.youtube_publish_path,
+            },
+            {
+                "key": "title",
+                "label": "title preenchido",
+                "ready": bool(title_value),
+                "value": title_value,
+            },
+            {
+                "key": "description",
+                "label": "description preenchida",
+                "ready": bool(description_value),
+                "value": description_value,
+            },
+            {
+                "key": "tags",
+                "label": "tags nao vazias",
+                "ready": bool(tags_value),
+                "value": ", ".join(tags_value) if tags_value else None,
+            },
+            {
+                "key": "visibility",
+                "label": "visibility definida",
+                "ready": bool(visibility_value),
+                "value": visibility_value,
+            },
+            {
+                "key": "made_for_kids",
+                "label": "made_for_kids definido",
+                "ready": made_for_kids_value is not None,
+                "value": "true" if made_for_kids_value else "false" if made_for_kids_value is not None else None,
+            },
+            {
+                "key": "content_brain_label",
+                "label": "content_brain label definido",
+                "ready": bool(content_brain_label),
+                "value": content_brain_label,
+            },
+        ]
+        missing_items = [item["key"] for item in items if not item["ready"]]
+        return {
+            "video_id": state.video_id,
+            "video_slug": state.video_slug,
+            "channel_slug": state.channel_slug,
+            "stage_status": state.stage_status,
+            "overall_status": "ready" if not missing_items else "missing_items",
+            "ready": not missing_items,
+            "missing_items": missing_items,
+            "items": items,
+        }
+
     async def get_status(self, *, video_id: int) -> VideoPipelineState:
         statement = select(Video).options(selectinload(Video.asset), selectinload(Video.channel)).where(Video.id == video_id)
         video = await self.session.scalar(statement)

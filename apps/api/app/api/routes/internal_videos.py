@@ -27,6 +27,7 @@ from app.schemas.video_production import (
     VideoPipelineResponse,
     VideoPreviewRequest,
     VideoPreviewRegenerateRequest,
+    PublishReadinessResponse,
     VideoScriptUpdateRequest,
     VideoProductionRequest,
     VideoProductionResponse,
@@ -664,6 +665,18 @@ async def create_youtube_publish_prep(
         _raise_http_error(error)
     response = VideoPipelineResponse.model_validate(asdict(result))
     return await _with_demo_flag(service, response)
+
+
+@router.get("/{video_id}/publish-readiness", response_model=PublishReadinessResponse)
+async def get_publish_readiness(
+    video_id: int,
+    service: VideoProductionService = Depends(get_video_production_service),
+) -> PublishReadinessResponse:
+    try:
+        result = await service.get_publish_readiness(video_id=video_id)
+    except ValueError as error:
+        _raise_http_error(error)
+    return PublishReadinessResponse.model_validate(result)
 
 
 @router.get("/{video_id}/status", response_model=VideoPipelineResponse)

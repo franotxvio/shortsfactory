@@ -22,6 +22,24 @@ class YouTubePublishPrepRequest(BaseModel):
     made_for_kids: bool = Field(default=False)
 
 
+class PublishReadinessCheckResponse(BaseModel):
+    key: str
+    label: str
+    ready: bool
+    value: str | None = None
+
+
+class PublishReadinessResponse(BaseModel):
+    video_id: int
+    video_slug: str | None = None
+    channel_slug: str | None = None
+    stage_status: str | None = None
+    overall_status: str
+    ready: bool
+    missing_items: list[str] = Field(default_factory=list)
+    items: list[PublishReadinessCheckResponse] = Field(default_factory=list)
+
+
 class VideoProductionResponse(BaseModel):
     video_id: int
     channel_slug: str | None = None
