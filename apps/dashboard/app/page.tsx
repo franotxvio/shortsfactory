@@ -455,7 +455,7 @@ export default function DashboardPage() {
     ];
     const currentIndex = order.indexOf(video.stage_status);
     const targetIndex = order.indexOf(stage);
-    return currentIndex === targetIndex - 1;
+    return currentIndex === targetIndex;
   }
 
   function canSelectAsset(video: VideoItem | null) {
