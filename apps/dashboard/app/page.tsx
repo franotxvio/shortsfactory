@@ -30,6 +30,7 @@ type VideoItem = {
   call_to_action?: string | null;
   estimated_duration_seconds?: number | null;
   style_tone?: string | null;
+  content_format?: string | null;
   visual_template?: string | null;
   target_duration_seconds?: number | null;
   video_title?: string | null;
@@ -185,6 +186,14 @@ const DEFAULT_UPLOAD_FORM = {
 
 const DEFAULT_VISUAL_TEMPLATE = "default";
 const DEFAULT_CREATE_STYLE_TONE = "auto";
+const DEFAULT_CREATE_CONTENT_FORMAT = "auto";
+const SUPPORTED_CONTENT_FORMATS = new Set(["football_quiz", "general_quiz", "would_you_rather"]);
+
+const CONTENT_FORMAT_BY_CHANNEL_SLUG: Record<string, string> = {
+  "football-quiz": "football_quiz",
+  "general-quiz": "general_quiz",
+  "would-you-rather": "would_you_rather",
+};
 
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -281,6 +290,7 @@ export default function DashboardPage() {
   const [channelName, setChannelName] = useState(DEFAULT_FORM.channelName);
   const [videoTitle, setVideoTitle] = useState(DEFAULT_FORM.videoTitle);
   const [createStyleTone, setCreateStyleTone] = useState(DEFAULT_CREATE_STYLE_TONE);
+  const [createContentFormat, setCreateContentFormat] = useState(DEFAULT_CREATE_CONTENT_FORMAT);
   const [createTargetDurationSeconds, setCreateTargetDurationSeconds] = useState("");
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [assets, setAssets] = useState<AssetItem[]>([]);
@@ -517,6 +527,15 @@ export default function DashboardPage() {
     return value ? `${value}s` : "opcional";
   }
 
+  function inferContentFormat(channelSlugValue: string) {
+    return CONTENT_FORMAT_BY_CHANNEL_SLUG[channelSlugValue.trim().toLowerCase()] ?? "";
+  }
+
+  function normalizeSelectableContentFormat(value?: string | null) {
+    const normalized = value?.trim().toLowerCase() ?? "";
+    return SUPPORTED_CONTENT_FORMATS.has(normalized) ? normalized : "";
+  }
+
   function formatJobTimestamp(value?: string | null) {
     if (!value) {
       return "pendente";
@@ -543,6 +562,8 @@ export default function DashboardPage() {
     setPresetDefaultCta(preset.default_cta ?? "");
     setPresetTargetDurationSeconds(preset.target_duration_seconds ? String(preset.target_duration_seconds) : "");
     setPresetNotice("Preset encontrado para este canal");
+    const presetFormat = inferContentFormat(preset.channel_slug) || normalizeSelectableContentFormat(preset.default_topic_style);
+    setCreateContentFormat(presetFormat || DEFAULT_CREATE_CONTENT_FORMAT);
   }, []);
 
   useEffect(() => {
@@ -802,6 +823,7 @@ export default function DashboardPage() {
           execution_mode: "fake",
           style_tone: createStyleTone === "auto" ? undefined : createStyleTone,
           target_duration_seconds: Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : undefined,
+          content_format: createContentFormat === "auto" ? undefined : createContentFormat,
         }),
       });
       mergeVideo(created);
@@ -1463,7 +1485,12 @@ export default function DashboardPage() {
                 onChange={(event) => {
                   const nextChannelSlug = event.target.value;
                   setChannelSlug(nextChannelSlug);
-                  applyPresetToForm(channelPresets.find((preset) => preset.channel_slug === nextChannelSlug.trim()) ?? null);
+                  const nextPreset = channelPresets.find((preset) => preset.channel_slug === nextChannelSlug.trim()) ?? null;
+                  applyPresetToForm(nextPreset);
+                  if (!nextPreset) {
+                    const inferredFormat = inferContentFormat(nextChannelSlug);
+                    setCreateContentFormat(inferredFormat || DEFAULT_CREATE_CONTENT_FORMAT);
+                  }
                 }}
               />
             </label>
@@ -1484,6 +1511,15 @@ export default function DashboardPage() {
               </select>
             </label>
             <label className="field">
+              <span>Formato viral</span>
+              <select value={createContentFormat} onChange={(event) => setCreateContentFormat(event.target.value)}>
+                <option value="auto">auto (usa canal/preset)</option>
+                <option value="football_quiz">football_quiz</option>
+                <option value="general_quiz">general_quiz</option>
+                <option value="would_you_rather">would_you_rather</option>
+              </select>
+            </label>
+            <label className="field">
               <span>Duracao curta alvo em segundos</span>
               <input
                 inputMode="numeric"
@@ -1497,7 +1533,7 @@ export default function DashboardPage() {
           <button type="button" className="primary" onClick={createFakeVideo} disabled={busyAction !== null}>
             {busyAction === "create" ? "Criando..." : "Criar video fake"}
           </button>
-          <p className="helper">Auto usa o preset do canal; duracao ate 15s ativa o modo viral curto.</p>
+          <p className="helper">Auto usa o preset do canal ou o formato do slug; duracao ate 15s segue o modo curto.</p>
 
           <div className="panel-header spaced" id="channel-presets">
             <h2>2. Preset do canal</h2>
@@ -1652,6 +1688,7 @@ export default function DashboardPage() {
                         <span className={`badge ${performanceClass === "winning" ? "success" : performanceClass === "weak" ? "warning" : "subtle"}`}>
                           {video.performance_label ?? "unknown"}
                         </span>
+                        {video.content_format ? <span className="badge accent">format: {video.content_format}</span> : null}
                         <span className={`badge ${video.content_brain_context_used ? "success" : "subtle"}`}>
                           CB {video.content_brain_context_used ? "on" : "off"}
                         </span>
@@ -1745,6 +1782,11 @@ export default function DashboardPage() {
                 {selectedVideo.style_tone ? (
                   <p>
                     <strong>Tom:</strong> {selectedVideo.style_tone}
+                  </p>
+                ) : null}
+                {selectedVideo.content_format ? (
+                  <p>
+                    <strong>Formato:</strong> {selectedVideo.content_format}
                   </p>
                 ) : null}
                 <p>

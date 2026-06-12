@@ -122,6 +122,7 @@ class FakeLLMUsageData:
 class FakeAsyncOpenAI:
     last_init_kwargs: dict[str, str | None] | None = None
     last_chat_kwargs: dict[str, object] | None = None
+    chat_history: list[dict[str, object]] = []
     response_usage: FakeLLMUsageData | None = None
     response_model: str = "deepseek-chat"
     response_request_id: str = "req-deepseek"
@@ -137,6 +138,7 @@ class FakeAsyncOpenAI:
         class _Completions:
             async def create(self, **kwargs: object):
                 FakeAsyncOpenAI.last_chat_kwargs = kwargs
+                FakeAsyncOpenAI.chat_history.append(dict(kwargs))
                 messages = kwargs.get("messages", [])
                 system_prompt = ""
                 user_prompt = ""
@@ -346,6 +348,29 @@ async def test_fake_script_engine_supports_viral_micro_short_mode(db_session) ->
 
 
 @pytest.mark.asyncio
+async def test_fake_script_engine_supports_content_format_mode(db_session) -> None:
+    service = ScriptEngineService(session=db_session)
+    result = await service.create_test_script(
+        topic="Prime Messi vs prime Ronaldo",
+        channel_slug="football-quiz",
+        channel_name="Football Quiz",
+        video_title="Football quiz test",
+        content_format="football_quiz",
+        target_duration_seconds=10,
+    )
+
+    assert result.script_status == "approved"
+    assert result.content_format == "football_quiz"
+    assert result.style_tone == "football_quiz"
+    assert result.estimated_duration_seconds is not None
+    assert 8 <= result.estimated_duration_seconds <= 15
+    assert result.hook == "Prime showdown:"
+    assert result.call_to_action == ""
+    assert len(result.body_blocks or []) <= 5
+    assert "crowd splits again" in (result.script_text or "").lower()
+
+
+@pytest.mark.asyncio
 async def test_real_script_engine_without_api_key_fails_clear(db_session) -> None:
     service = ScriptEngineService(session=db_session, settings=Settings(llm_provider=LLMProvider.OPENAI))
 
@@ -434,3 +459,36 @@ async def test_real_script_engine_marks_estimated_cost_when_usage_missing(db_ses
     assert cost_log.provider == "deepseek"
     assert cost_log.model == "deepseek-chat"
     assert cost_log.estimated is True
+
+
+@pytest.mark.asyncio
+async def test_real_script_engine_includes_content_format_context_in_prompt(db_session, monkeypatch) -> None:
+    monkeypatch.setattr("app.services.openai_client.AsyncOpenAI", FakeAsyncOpenAI)
+    FakeAsyncOpenAI.last_init_kwargs = None
+    FakeAsyncOpenAI.last_chat_kwargs = None
+    FakeAsyncOpenAI.chat_history = []
+    FakeAsyncOpenAI.response_usage = FakeLLMUsageData(prompt_tokens=12, completion_tokens=34)
+    FakeAsyncOpenAI.response_model = "deepseek-chat"
+
+    settings = Settings(
+        llm_provider=LLMProvider.DEEPSEEK,
+        llm_api_key="sk-deepseek",
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_model="deepseek-chat",
+    )
+    service = ScriptEngineService(session=db_session, settings=settings)
+
+    result = await service.create_test_script(
+        topic="Guess the country from 3 clues",
+        channel_slug="general-quiz",
+        channel_name="General Quiz",
+        video_title="General quiz test",
+        execution_mode=VideoExecutionMode.REAL,
+        content_format="general_quiz",
+        target_duration_seconds=10,
+    )
+
+    assert result.content_format == "general_quiz"
+    assert FakeAsyncOpenAI.chat_history
+    serialized_prompts = [json.dumps(call, default=str).lower() for call in FakeAsyncOpenAI.chat_history]
+    assert any("content format: general_quiz" in prompt for prompt in serialized_prompts)

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.models.core import Script, Video
 from app.models.enums import VideoStageStatus, WorkflowStatus
+from app.services.content_format_engine import normalize_content_format
 from app.services.media_utils import (
     build_srt_from_text,
     build_srt_from_segments,
@@ -17,6 +18,7 @@ from app.services.media_utils import (
     escape_ffmpeg_path,
     probe_duration_seconds,
     run_command,
+    wrap_caption_text,
     write_text_file,
 )
 
@@ -100,7 +102,21 @@ class CaptionWorker:
         script_payload = generation_payload.get("script") if isinstance(generation_payload.get("script"), dict) else {}
         style_tone = str(script_payload.get("style_tone") or "").strip().lower()
         estimated_duration_seconds = script_payload.get("estimated_duration_seconds")
-        is_viral = style_tone == "viral_micro_short" or (
+        language = str(
+            script_payload.get("language")
+            or generation_payload.get("language")
+            or generation_payload.get("language_code")
+            or ""
+        ).strip().lower()
+        content_format = normalize_content_format(
+            str(
+                script_payload.get("content_format")
+                or generation_payload.get("content_format")
+                or generation_payload.get("format")
+                or ""
+            )
+        )
+        is_viral = style_tone == "viral_micro_short" or content_format is not None or (
             isinstance(estimated_duration_seconds, int) and 0 < estimated_duration_seconds <= 15
         )
         if not is_viral:
@@ -119,4 +135,5 @@ class CaptionWorker:
         call_to_action = str(script_payload.get("call_to_action") or script_payload.get("cta") or "").strip()
         if call_to_action:
             segments.append(call_to_action)
-        return segments
+        max_line_length = 28 if language in {"en", "en-us", "en-gb", "english"} else 30
+        return [wrap_caption_text(segment, max_line_length=max_line_length, max_lines=2) for segment in segments]

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.models.core import Channel, CostLog, LLMCache, Script, Video
 from app.models.enums import LifecycleStatus, LLMProvider, VideoExecutionMode, VideoStageStatus, WorkflowStatus
+from app.services.content_format_engine import build_content_format_pack, infer_content_format, normalize_content_format
 from app.services.llm_types import LLMResult, LLMUsage
 from app.services.openai_client import OpenAIChatPayload, LLMJSONClient
 
@@ -55,6 +56,23 @@ def _is_viral_micro_short_mode(style_tone: str | None, target_duration_seconds: 
     }:
         return True
     return isinstance(target_duration_seconds, int) and 0 < target_duration_seconds <= _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS
+
+
+def _normalize_language_value(value: str | None) -> str:
+    normalized = _normalize_reason_tag(value or "")
+    if normalized in {"en", "en-us", "en-gb", "english", "eng"}:
+        return "en"
+    if normalized in {"pt", "pt-br", "pt-brasil", "portuguese", "portugues"}:
+        return "pt"
+    return normalized
+
+
+def _is_english_language(value: str | None) -> bool:
+    return _normalize_language_value(value) == "en"
+
+
+def _is_supported_content_format_mode(content_format: str | None) -> bool:
+    return normalize_content_format(content_format) is not None
 
 
 def _short_topic_label(topic: str) -> str:
@@ -174,6 +192,13 @@ def _build_beats(body_blocks: list[str], call_to_action: str) -> list[str]:
     return beats
 
 
+def _extract_content_format_from_prompt(prompt: str) -> str | None:
+    match = re.search(r"content format:\s*([a-z0-9_-]+)", prompt.lower())
+    if not match:
+        return None
+    return normalize_content_format(match.group(1))
+
+
 def _coerce_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -214,28 +239,69 @@ def _normalize_script_payload(
     style_tone: str | None = None,
     default_call_to_action: str | None = None,
     target_duration_seconds: int | None = None,
+    language: str | None = None,
+    content_format: str | None = None,
 ) -> dict[str, object]:
-    title = str(payload.get("title") or f"Roteiro curto: {topic}").strip()
+    default_title = f"Short script: {topic}" if _normalize_language_value(language or str(payload.get("language") or payload.get("language_code") or "")) == "en" else f"Roteiro curto: {topic}"
+    title = str(payload.get("title") or default_title).strip()
     style_tone = str(style_tone or payload.get("style_tone") or payload.get("tone") or "didatico e direto").strip()
-    viral_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds)
+    language_value = _normalize_language_value(language or str(payload.get("language") or payload.get("language_code") or ""))
+    content_format_value = normalize_content_format(
+        content_format or str(payload.get("content_format") or payload.get("contentFormat") or "")
+    )
+    viral_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds) or content_format_value is not None
 
-    if viral_mode:
-        hook = str(payload.get("hook") or hook_text or _viral_micro_short_hook(topic)).strip()
+    if content_format_value is not None:
+        format_pack = build_content_format_pack(
+            content_format_value,
+            topic=topic,
+            target_duration_seconds=target_duration_seconds,
+            language=language_value or None,
+        )
+    else:
+        format_pack = None
+
+    if format_pack is not None:
+        hook = str(payload.get("hook") or hook_text or format_pack.hook).strip()
+        body_blocks = _coerce_string_list(payload.get("body_blocks")) or list(format_pack.body_blocks)
+        if len(body_blocks) < 3:
+            body_blocks.extend(format_pack.body_blocks[len(body_blocks) : 3])
+        body_blocks = body_blocks[:5]
+        call_to_action = str(payload.get("call_to_action") or payload.get("cta") or format_pack.call_to_action).strip()
+        estimated_duration_seconds = (
+            target_duration_seconds
+            if isinstance(target_duration_seconds, int) and target_duration_seconds > 0
+            else format_pack.estimated_duration_seconds
+        )
+        style_tone = format_pack.style_tone
+        title = str(payload.get("title") or format_pack.title).strip()
+        script_text = str(payload.get("script") or "").strip() or _build_consolidated_script_text(hook, body_blocks, call_to_action)
+        beats = _coerce_string_list(payload.get("beats")) or _build_beats(body_blocks, call_to_action)
+    elif viral_mode:
+        hook = str(payload.get("hook") or hook_text or _viral_micro_short_hook(topic, language=language_value)).strip()
         if len(hook) > 40:
-            hook = _viral_micro_short_hook(topic)
+            hook = _viral_micro_short_hook(topic, language=language_value)
         body_blocks = _coerce_string_list(payload.get("body_blocks"))
-        if _looks_like_persona_topic(topic):
-            body_blocks = _viral_micro_short_body_blocks(topic)[:4]
+        if _is_english_language(language_value):
+            if not body_blocks:
+                body_blocks = _english_viral_micro_short_body_blocks(topic)
+            if len(body_blocks) < 3:
+                defaults = _english_viral_micro_short_body_blocks(topic)
+                body_blocks.extend(defaults[len(body_blocks) : 3])
+            body_blocks = body_blocks[:5]
+            call_to_action = ""
+        elif _looks_like_persona_topic(topic):
+            body_blocks = _viral_micro_short_body_blocks(topic, language=language_value)[:4]
         if not body_blocks:
             script_text = str(payload.get("script") or "").strip()
             if script_text:
                 split_blocks = [part.strip() for part in re.split(r"(?<=[.!?])\s+", script_text) if part.strip()]
                 body_blocks = split_blocks[:3]
         if len(body_blocks) < 3:
-            defaults = _viral_micro_short_body_blocks(topic)
+            defaults = _viral_micro_short_body_blocks(topic, language=language_value)
             body_blocks.extend(defaults[len(body_blocks) : 3])
         body_blocks = body_blocks[:5]
-        call_to_action = str(payload.get("call_to_action") or payload.get("cta") or "").strip()
+        call_to_action = "" if _is_english_language(language_value) else str(payload.get("call_to_action") or payload.get("cta") or "").strip()
         if isinstance(target_duration_seconds, int) and target_duration_seconds > 0:
             estimated_duration_seconds = max(
                 6,
@@ -288,6 +354,8 @@ def _normalize_script_payload(
         "style_tone": style_tone,
         "script": script_text,
         "beats": beats,
+        "language": language_value or payload.get("language") or payload.get("language_code"),
+        "content_format": content_format_value,
     }
 
 
@@ -311,6 +379,137 @@ class ScriptGenerationResult:
     winning_signals_count: int = 0
     weak_signals_count: int = 0
     applied_reason_tags: list[str] | None = None
+    content_format: str | None = None
+
+
+def _english_viral_micro_short_body_blocks(topic: str) -> list[str]:
+    topic_label = _short_topic_label(topic)
+    normalized_topic = _normalize_reason_tag(topic)
+    if "beginner programmer" in normalized_topic and "senior programmer" in normalized_topic:
+        return [
+            "copies the solution.",
+            "Senior programmer:",
+            "breaks the problem apart.",
+            "then fixes it twice.",
+        ]
+    if "when your code works first try" in normalized_topic:
+        return [
+            "you do not celebrate.",
+            "you get nervous.",
+            "and run it again.",
+        ]
+    if "python error messages" in normalized_topic:
+        return [
+            "one missing space.",
+            "47 lines of panic.",
+            "welcome to programming.",
+        ]
+    if "javascript developers at 3am" in normalized_topic or "javascript developers at 3 a.m." in normalized_topic:
+        return [
+            "the bug is still alive.",
+            "coffee is gone.",
+            "you debug with one eye open.",
+        ]
+    if "the bug disappears when you share your screen" in normalized_topic or (
+        "bug" in normalized_topic and "share your screen" in normalized_topic
+    ):
+        return [
+            "suddenly behaves.",
+            "like it pays rent.",
+            "on your laptop.",
+        ]
+    if "it works on my machine" in normalized_topic:
+        return [
+            "works in one tab.",
+            "dies in the demo.",
+            "classic developer energy.",
+        ]
+    if "merge conflict" in normalized_topic:
+        return [
+            "two people touched the same line.",
+            "git calls it peace.",
+            "you call it therapy.",
+        ]
+    return [
+        "you try the big fix first.",
+        "real devs split the problem up.",
+        "then ship the smallest change.",
+    ]
+
+
+def _viral_micro_short_hook(topic: str, *, language: str | None = None) -> str:
+    topic_label = _short_topic_label(topic)
+    normalized_topic = _normalize_reason_tag(topic)
+    if _is_english_language(language):
+        if "beginner programmer" in normalized_topic and "senior programmer" in normalized_topic:
+            return "Beginner programmer:"
+        if "when your code works first try" in normalized_topic:
+            return "When your code works first try:"
+        if "python error messages" in normalized_topic:
+            return "Python error messages:"
+        if "javascript developers at 3am" in normalized_topic or "javascript developers at 3 a.m." in normalized_topic:
+            return "JavaScript developers at 3AM:"
+        if "the bug disappears when you share your screen" in normalized_topic or (
+            "bug" in normalized_topic and "share your screen" in normalized_topic
+        ):
+            return "The bug when you share your screen:"
+        if "it works on my machine" in normalized_topic:
+            return "It works on my machine:"
+        if len(topic_label) <= 28:
+            return f"{topic_label}:"
+        words = topic_label.split()
+        if len(words) >= 2:
+            return f"{' '.join(words[:2])}:"
+        return f"{topic_label[:24].strip()}:"
+
+    if len(topic_label) <= 18:
+        return f"Seu primeiro erro em {topic_label}:"
+    if len(topic_label) <= 28:
+        return f"{topic_label}:"
+    words = topic_label.split()
+    if len(words) >= 2:
+        return f"{' '.join(words[:2])}:"
+    return f"{topic_label[:24].strip()}:"
+
+
+def _viral_micro_short_body_blocks(topic: str, *, language: str | None = None) -> list[str]:
+    if _is_english_language(language):
+        return _english_viral_micro_short_body_blocks(topic)
+
+    topic_label = _short_topic_label(topic)
+    if _looks_like_persona_topic(topic):
+        contrast_label = _persona_contrast_label(topic)
+        return [
+            "vou estudar tudo antes de comecar.",
+            f"{contrast_label}:",
+            "quebra tudo.",
+            "e pesquisa no Google.",
+        ]
+
+    hook_seed = int(hashlib.sha256(topic_label.encode("utf-8")).hexdigest()[:2], 16)
+    variants = [
+        [
+            "voce tenta decorar tudo.",
+            "codigo bom nao nasce decorado.",
+            "nasce testado.",
+        ],
+        [
+            "voce quer entender tudo de uma vez.",
+            "mas o atalho e testar pequeno.",
+            "e repetir ate fazer sentido.",
+        ],
+        [
+            "voce comemora quando funciona.",
+            "quem tem experiencia desconfia.",
+            "e roda de novo.",
+        ],
+        [
+            "voce le a solucao pronta.",
+            "profissional de verdade quebra o problema.",
+            "e reconstrói sozinho.",
+        ],
+    ]
+    return variants[hook_seed % len(variants)]
 
 
 class _DeterministicLLMClient:
@@ -333,12 +532,43 @@ class _DeterministicLLMClient:
             user_prompt_lower = payload.user_prompt.lower()
             duration_match = re.search(r"target duration seconds:\s*(\d+)", user_prompt_lower)
             duration_seconds = int(duration_match.group(1)) if duration_match is not None else None
+            language_match = re.search(r"language:\s*([a-z-]+)", user_prompt_lower)
+            language = _normalize_language_value(language_match.group(1) if language_match is not None else None)
+            content_format = _extract_content_format_from_prompt(payload.user_prompt)
+            format_pack = (
+                build_content_format_pack(
+                    content_format,
+                    topic=topic,
+                    target_duration_seconds=duration_seconds,
+                    language=language,
+                )
+                if content_format is not None
+                else None
+            )
             viral_mode = "viral_micro_short" in user_prompt_lower or (
                 duration_seconds is not None and duration_seconds <= _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS
             )
-            if viral_mode:
-                hook = _viral_micro_short_hook(topic)
-                body_blocks = _viral_micro_short_body_blocks(topic)
+            if format_pack is not None:
+                hook = format_pack.hook
+                body_blocks = list(format_pack.body_blocks)
+                call_to_action = format_pack.call_to_action
+                estimated_duration_seconds = format_pack.estimated_duration_seconds
+                style_tone = format_pack.style_tone
+                content = {
+                    "title": format_pack.title,
+                    "hook": hook,
+                    "body_blocks": body_blocks,
+                    "call_to_action": call_to_action,
+                    "estimated_duration_seconds": estimated_duration_seconds,
+                    "style_tone": style_tone,
+                    "script": _build_consolidated_script_text(hook, body_blocks, call_to_action),
+                    "beats": _build_beats(body_blocks, call_to_action),
+                    "content_format": content_format,
+                    "language": language,
+                }
+            elif viral_mode:
+                hook = _viral_micro_short_hook(topic, language=language)
+                body_blocks = _viral_micro_short_body_blocks(topic, language=language)
                 call_to_action = ""
                 estimated_duration_seconds = max(
                     6,
@@ -348,6 +578,20 @@ class _DeterministicLLMClient:
                     ),
                 )
                 style_tone = _VIRAL_MICRO_SHORT_STYLE
+                if language == "en" and body_blocks and len(body_blocks) < 3:
+                    body_blocks = [*body_blocks, *_english_viral_micro_short_body_blocks(topic)][:
+                        max(3, len(body_blocks))
+                    ]
+                content = {
+                    "title": f"Short script: {topic}" if language == "en" else f"Roteiro curto: {topic}",
+                    "hook": hook,
+                    "body_blocks": body_blocks,
+                    "call_to_action": call_to_action,
+                    "estimated_duration_seconds": estimated_duration_seconds,
+                    "style_tone": style_tone,
+                    "script": _build_consolidated_script_text(hook, body_blocks, call_to_action),
+                    "beats": _build_beats(body_blocks, call_to_action),
+                }
             else:
                 body_count = 3 + int(hashlib.sha256(topic.encode("utf-8")).hexdigest()[:2], 16) % 3
                 body_templates = [
@@ -362,16 +606,16 @@ class _DeterministicLLMClient:
                 call_to_action = "Se isso te ajudou, salva o video e compartilha com alguem que precisa simplificar isso."
                 estimated_duration_seconds = 24 + len(body_blocks) * 6
                 style_tone = "didatico e direto"
-            content = {
-                "title": f"Roteiro curto: {topic}",
-                "hook": hook,
-                "body_blocks": body_blocks,
-                "call_to_action": call_to_action,
-                "estimated_duration_seconds": estimated_duration_seconds,
-                "style_tone": style_tone,
-                "script": _build_consolidated_script_text(hook, body_blocks, call_to_action),
-                "beats": _build_beats(body_blocks, call_to_action),
-            }
+                content = {
+                    "title": f"Short script: {topic}" if language == "en" else f"Roteiro curto: {topic}",
+                    "hook": hook,
+                    "body_blocks": body_blocks,
+                    "call_to_action": call_to_action,
+                    "estimated_duration_seconds": estimated_duration_seconds,
+                    "style_tone": style_tone,
+                    "script": _build_consolidated_script_text(hook, body_blocks, call_to_action),
+                    "beats": _build_beats(body_blocks, call_to_action),
+                }
         else:
             content = {
                 "risk_score": 0.23,
@@ -411,17 +655,34 @@ class ScriptEngineService:
         style_tone: str | None = None,
         default_call_to_action: str | None = None,
         target_duration_seconds: int | None = None,
+        language: str | None = None,
         content_brain_context: dict[str, object] | None = None,
+        content_format: str | None = None,
     ) -> ScriptGenerationResult:
+        effective_language = language or ("en" if channel_slug.lower().startswith("english-") else None)
+        effective_content_format = infer_content_format(channel_slug=channel_slug, explicit_format=content_format)
         llm_client, provider_name, record_cost_logs = self._get_llm_client(execution_mode)
         content_brain_summary = self._normalize_content_brain_context(content_brain_context)
-        viral_micro_short_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds)
+        viral_micro_short_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds) or effective_content_format is not None
         effective_default_call_to_action = None if viral_micro_short_mode else default_call_to_action
         async with self.session.begin():
             channel = await self._get_or_create_channel(channel_slug=channel_slug, channel_name=channel_name)
 
-            idea = await self._generate_idea(topic=topic, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
-            hook = await self._generate_hook(topic=topic, idea=idea, llm_client=llm_client, provider_name=provider_name, record_cost_logs=record_cost_logs)
+            idea = await self._generate_idea(
+                topic=topic,
+                llm_client=llm_client,
+                provider_name=provider_name,
+                record_cost_logs=record_cost_logs,
+                content_format=effective_content_format,
+            )
+            hook = await self._generate_hook(
+                topic=topic,
+                idea=idea,
+                llm_client=llm_client,
+                provider_name=provider_name,
+                record_cost_logs=record_cost_logs,
+                content_format=effective_content_format,
+            )
             script = await self._generate_script(
                 topic=topic,
                 idea=idea,
@@ -432,7 +693,9 @@ class ScriptEngineService:
                 style_tone=style_tone,
                 default_call_to_action=effective_default_call_to_action,
                 target_duration_seconds=target_duration_seconds,
+                language=effective_language,
                 content_brain_context=content_brain_summary,
+                content_format=effective_content_format,
             )
             if execution_mode == VideoExecutionMode.FAKE and content_brain_summary is not None and not viral_micro_short_mode:
                 applied_script, applied_tags = self._apply_content_brain_context_to_script(
@@ -454,7 +717,30 @@ class ScriptEngineService:
                 style_tone=style_tone,
                 default_call_to_action=default_call_to_action,
                 target_duration_seconds=target_duration_seconds,
+                language=effective_language,
+                content_format=effective_content_format,
             )
+            if effective_content_format is not None:
+                format_pack = build_content_format_pack(
+                    effective_content_format,
+                    topic=topic,
+                    target_duration_seconds=target_duration_seconds,
+                    language=effective_language,
+                )
+                normalized_script = {
+                    **normalized_script,
+                    "title": format_pack.title,
+                    "hook": format_pack.hook,
+                    "body_blocks": list(format_pack.body_blocks),
+                    "call_to_action": format_pack.call_to_action,
+                    "estimated_duration_seconds": format_pack.estimated_duration_seconds,
+                    "style_tone": format_pack.style_tone,
+                    "script": _build_consolidated_script_text(format_pack.hook, list(format_pack.body_blocks), format_pack.call_to_action),
+                    "beats": ["hook", *[f"body_{index + 1}" for index in range(len(format_pack.body_blocks))], "cta"]
+                    if format_pack.call_to_action
+                    else ["hook", *[f"body_{index + 1}" for index in range(len(format_pack.body_blocks))]],
+                    "content_format": effective_content_format,
+                }
 
             video_slug = f"{_slugify(topic)}-{uuid4().hex[:8]}"
             video = Video(
@@ -475,6 +761,8 @@ class ScriptEngineService:
                 "policy": policy.content,
                 "content_brain": content_brain_summary,
                 "content_brain_context": content_brain_context,
+                "language": effective_language,
+                "content_format": effective_content_format,
             }
             script_row = Script(
                 video_id=video.id,
@@ -521,6 +809,7 @@ class ScriptEngineService:
                 winning_signals_count=int((content_brain_summary or {}).get("winning_signals_count") or 0),
                 weak_signals_count=int((content_brain_summary or {}).get("weak_signals_count") or 0),
                 applied_reason_tags=list((content_brain_summary or {}).get("applied_reason_tags") or []),
+                content_format=effective_content_format,
             )
 
     async def _get_or_create_channel(self, *, channel_slug: str, channel_name: str) -> Channel:
@@ -549,28 +838,50 @@ class ScriptEngineService:
             raise ValueError("LLM_API_KEY is required for real LLM execution")
         return LLMJSONClient(self.settings), self.settings.llm_provider.value, True
 
-    async def _generate_idea(self, *, topic: str, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
+    async def _generate_idea(
+        self,
+        *,
+        topic: str,
+        llm_client: LLMJSONClient | _DeterministicLLMClient,
+        provider_name: str,
+        record_cost_logs: bool,
+        content_format: str | None = None,
+    ) -> LLMResult:
         return await self._generate_operation(
             operation="idea",
             topic=topic,
-            prompt_context={"topic": topic},
+            prompt_context={"topic": topic, "content_format": content_format},
             system_prompt="You generate one concise video idea in JSON only.",
-            user_prompt=f'Create one short video idea about "{topic}". Return JSON with keys idea, angle, title.',
+            user_prompt=(
+                f'Create one short video idea about "{topic}". '
+                f"{f'Content format: {content_format}. ' if content_format else ''}"
+                "Return JSON with keys idea, angle, title."
+            ),
             max_tokens=self.settings.openai_idea_max_tokens,
             llm_client=llm_client,
             provider_name=provider_name,
             record_cost_logs=record_cost_logs,
         )
 
-    async def _generate_hook(self, *, topic: str, idea: LLMResult, llm_client: LLMJSONClient | _DeterministicLLMClient, provider_name: str, record_cost_logs: bool) -> LLMResult:
+    async def _generate_hook(
+        self,
+        *,
+        topic: str,
+        idea: LLMResult,
+        llm_client: LLMJSONClient | _DeterministicLLMClient,
+        provider_name: str,
+        record_cost_logs: bool,
+        content_format: str | None = None,
+    ) -> LLMResult:
         idea_text = str(idea.content.get("idea") or "")
         return await self._generate_operation(
             operation="hook",
             topic=topic,
-            prompt_context={"topic": topic, "idea": idea_text},
+            prompt_context={"topic": topic, "idea": idea_text, "content_format": content_format},
             system_prompt="You generate a hook for a short-form video in JSON only.",
             user_prompt=(
                 f'Create a strong hook for a short video about "{topic}" using this idea: {idea_text!r}. '
+                f"{f'Content format: {content_format}. ' if content_format else ''}"
                 "Return JSON with keys hook and alt_hook."
             ),
             max_tokens=self.settings.openai_hook_max_tokens,
@@ -591,15 +902,27 @@ class ScriptEngineService:
         style_tone: str | None = None,
         default_call_to_action: str | None = None,
         target_duration_seconds: int | None = None,
+        language: str | None = None,
         content_brain_context: dict[str, object] | None = None,
+        content_format: str | None = None,
     ) -> LLMResult:
         idea_text = str(idea.content.get("idea") or "")
         hook_text = str(hook.content.get("hook") or "")
+        language_value = _normalize_language_value(language)
+        content_format_value = normalize_content_format(content_format or str((content_brain_context or {}).get("content_format") or ""))
         viral_micro_short_guidance = ""
-        if _is_viral_micro_short_mode(style_tone, target_duration_seconds):
+        if _is_viral_micro_short_mode(style_tone, target_duration_seconds) or content_format_value is not None:
             viral_micro_short_guidance = (
                 " Viral micro short mode: keep the hook strong in the first 1-2 seconds, "
                 "use 3 to 5 very short body blocks, make the CTA optional or empty, and keep the final duration between 6 and 15 seconds."
+            )
+            if language_value == "en":
+                viral_micro_short_guidance += " Write in natural English only and keep the meme-style punchline sharp."
+        content_format_guidance = ""
+        if content_format_value is not None:
+            content_format_guidance = (
+                f" Content format: {content_format_value}. "
+                "Use the format's native structure and visual rhythm, keep the language native to the audience, and keep the wording extremely short."
             )
         content_brain_context_text = ""
         if content_brain_context:
@@ -629,6 +952,8 @@ class ScriptEngineService:
                 "default_call_to_action": default_call_to_action,
                 "target_duration_seconds": target_duration_seconds,
                 "content_brain_context": content_brain_context,
+                "language": language_value or language,
+                "content_format": content_format_value,
             },
             system_prompt=(
                 "You write a complete short-form script in JSON only. "
@@ -637,9 +962,11 @@ class ScriptEngineService:
             user_prompt=(
                 f'Write a short-form video script about "{topic}". '
                 f'Idea: {idea_text!r}. Hook: {hook_text!r}. '
+                f"{f'Language: {language_value}. ' if language_value else ''}"
                 f"{f'Style tone: {style_tone!r}. ' if style_tone else ''}"
                 f"{f'Default CTA: {default_call_to_action!r}. ' if default_call_to_action else ''}"
                 f"{f'Target duration seconds: {target_duration_seconds}. ' if target_duration_seconds else ''}"
+                f"{content_format_guidance}"
                 f"{viral_micro_short_guidance}"
                 f"{content_brain_context_text}"
                 "Return JSON with keys title, hook, body_blocks, call_to_action, estimated_duration_seconds, style_tone, script and beats. "

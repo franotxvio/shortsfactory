@@ -496,6 +496,8 @@ async def create_test_video(
             execution_mode=payload.execution_mode,
             style_tone=payload.style_tone,
             target_duration_seconds=payload.target_duration_seconds,
+            language=payload.language,
+            content_format=payload.content_format,
         )
         await _commit_if_available(service)
     except ValueError as error:

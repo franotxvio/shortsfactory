@@ -31,6 +31,17 @@ def test_build_batch_specs_uses_english_dev_defaults() -> None:
     assert all(item.script_mode == DEFAULT_SCRIPT_MODE for item in specs)
     assert all(item.target_duration_seconds == DEFAULT_TARGET_DURATION_SECONDS for item in specs)
     assert all(item.visual_template == DEFAULT_VISUAL_TEMPLATE for item in specs)
+    assert all(item.language == "en" for item in specs)
+
+
+def test_build_batch_specs_generates_unique_topics_for_larger_batches() -> None:
+    specs = build_batch_specs(12)
+
+    topics = [item.topic for item in specs]
+    assert len(topics) == 12
+    assert len(set(topics)) == len(topics)
+    assert all(item.language == "en" for item in specs)
+    assert any(" - " in item.topic for item in specs[10:])
 
 
 def test_render_batch_report_includes_quality_and_paths() -> None:
@@ -81,4 +92,3 @@ def test_render_batch_report_includes_quality_and_paths() -> None:
     assert "duration gate failed" in report
     assert "OK" in report
     assert "FAIL" in report
-

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,14 @@ from app.services.english_batch_generator import (  # noqa: E402
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_TIMEOUT = 600.0
 DEFAULT_OUTPUT = REPO_ROOT / "apps" / "api" / "storage" / "review" / date.today().isoformat() / "batch_report.md"
+FORBIDDEN_PORTUGUESE_TERMS = {
+    "voce",
+    "solucao",
+    "pronta",
+    "profissional",
+    "reconstroi",
+    "quebra o problema",
+}
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -91,6 +101,21 @@ def _extract_state_fields(payload: dict[str, Any]) -> str:
         if value not in (None, "", [], {}):
             parts.append(f"{field}={value}")
     return " ".join(parts) if parts else "(no tracked fields)"
+
+
+def _normalize_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower()
+    normalized = re.sub(r"[^\w\s]+", " ", normalized)
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _assert_english_text(label: str, text_value: str) -> None:
+    normalized = _normalize_text(text_value)
+    for term in FORBIDDEN_PORTUGUESE_TERMS:
+        if term in normalized:
+            raise RuntimeError(f"{label} contains forbidden Portuguese text: {term}")
 
 
 def _print_step(name: str, detail: str) -> None:
@@ -214,6 +239,7 @@ def _build_outcome(
         duration_seconds=duration_seconds,
         readiness=str(readiness.get("overall_status") or "unknown"),
         visual_template=str(visual_template),
+        language=spec.language,
         stage_status=state.get("stage_status"),
         quality_ok=quality_ok,
         error_message=error_message,
@@ -238,6 +264,7 @@ def _run_video_batch(base_url: str, *, timeout: float, count: int) -> list[Batch
                     "channel_name": spec.channel_name,
                     "video_title": spec.title,
                     "execution_mode": spec.execution_mode,
+                    "language": spec.language,
                     "style_tone": spec.script_mode,
                     "target_duration_seconds": spec.target_duration_seconds,
                 },
@@ -254,6 +281,7 @@ def _run_video_batch(base_url: str, *, timeout: float, count: int) -> list[Batch
 
             video_id = int(create_state["video_id"])
             _print_step(f"create-video #{spec.index}", _extract_state_fields(create_state))
+            _assert_english_text(f"script #{spec.index}", str(create_state.get("script_text") or ""))
 
             tts_state = _request_json(
                 base_url,
@@ -272,6 +300,11 @@ def _run_video_batch(base_url: str, *, timeout: float, count: int) -> list[Batch
                 timeout=timeout,
             )
             _print_step(f"captions #{spec.index}", _extract_state_fields(captions_state))
+            caption_path = captions_state.get("caption_path")
+            if caption_path:
+                caption_file = (REPO_ROOT / "apps" / "api" / Path(str(caption_path))).resolve()
+                if caption_file.exists():
+                    _assert_english_text(f"captions #{spec.index}", caption_file.read_text(encoding="utf-8"))
 
             asset_state = _request_json(base_url, "POST", f"/internal/videos/{video_id}/asset", timeout=timeout)
             _print_step(f"asset #{spec.index}", _extract_state_fields(asset_state))
@@ -374,6 +407,9 @@ def main() -> int:
         _request_json(args.base_url, "GET", "/health", timeout=args.timeout)
         _print_step("health", "status=ok")
         _ensure_channel_preset(args.base_url, timeout=args.timeout, skip_preset=args.skip_preset)
+        topics = [spec.topic for spec in build_batch_specs(args.count, channel_slug=DEFAULT_CHANNEL_SLUG, channel_name=DEFAULT_CHANNEL_NAME)]
+        if len(set(topics)) != len(topics):
+            raise RuntimeError("Batch topic bank produced duplicate topics. Increase the bank or adjust the variants.")
         outcomes = _run_video_batch(args.base_url, timeout=args.timeout, count=args.count)
         report_path = Path(args.output)
         report_path.parent.mkdir(parents=True, exist_ok=True)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 
 DEFAULT_CHANNEL_SLUG = "english-dev-shorts"
 DEFAULT_CHANNEL_NAME = "English Dev Shorts"
@@ -17,6 +16,19 @@ DEFAULT_TOPICS = [
     "Python error messages be like",
     "JavaScript developers at 3AM",
     "The bug disappears when you share your screen",
+    "Git merge conflict at 5 PM",
+    "The one-line fix that broke production",
+    "Copy-paste refactor regret",
+    "It works on my machine, obviously",
+    "Debugging with one coffee left",
+]
+
+DEFAULT_TOPIC_VARIANTS = [
+    "same bug, different day",
+    "debugging at midnight",
+    "code review aftermath",
+    "the last coffee branch",
+    "panic, then patch",
 ]
 
 
@@ -25,6 +37,7 @@ class BatchVideoSpec:
     index: int
     topic: str
     title: str
+    language: str = "en"
     channel_slug: str = DEFAULT_CHANNEL_SLUG
     channel_name: str = DEFAULT_CHANNEL_NAME
     execution_mode: str = "fake"
@@ -47,6 +60,7 @@ class BatchVideoOutcome:
     duration_seconds: float | None
     readiness: str
     visual_template: str
+    language: str = "en"
     stage_status: str | None = None
     quality_ok: bool = False
     error_message: str | None = None
@@ -61,21 +75,30 @@ def build_batch_specs(
     if count < 1:
         raise ValueError("count must be at least 1")
 
-    topics = list(DEFAULT_TOPICS)
     specs: list[BatchVideoSpec] = []
     for index in range(count):
-        topic = topics[index % len(topics)]
-        topic_label = topic if count == 1 else f"{topic}"
+        topic = _topic_for_index(index)
+        topic_label = topic
         specs.append(
             BatchVideoSpec(
                 index=index + 1,
                 topic=topic,
                 title=topic_label,
+                language="en",
                 channel_slug=channel_slug,
                 channel_name=channel_name,
             )
         )
     return specs
+
+
+def _topic_for_index(index: int) -> str:
+    base_topic = DEFAULT_TOPICS[index % len(DEFAULT_TOPICS)]
+    cycle = index // len(DEFAULT_TOPICS)
+    if cycle <= 0:
+        return base_topic
+    variant = DEFAULT_TOPIC_VARIANTS[(cycle - 1) % len(DEFAULT_TOPIC_VARIANTS)]
+    return f"{base_topic} - {variant} #{cycle + 1}"
 
 
 def render_batch_report(
@@ -138,4 +161,3 @@ def _format_duration(value: float | None) -> str:
 
 def _escape_md(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ").strip()
-

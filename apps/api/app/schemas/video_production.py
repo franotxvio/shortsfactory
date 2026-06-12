@@ -12,6 +12,8 @@ class VideoProductionRequest(BaseModel):
     auto_approve_preview: bool = Field(default=True)
     execution_mode: VideoExecutionMode = Field(default=VideoExecutionMode.FAKE)
     visual_template: str = Field(default="default", max_length=64)
+    language: str | None = Field(default=None, max_length=32)
+    content_format: str | None = Field(default=None, max_length=64)
 
 
 class YouTubePublishPrepRequest(BaseModel):
@@ -82,6 +84,7 @@ class VideoProductionResponse(BaseModel):
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    content_format: str | None = None
     visual_template: str = "default"
     performance_label: str = "unknown"
     performance_notes: str | None = None
@@ -111,6 +114,8 @@ class VideoCreateRequest(BaseModel):
     execution_mode: VideoExecutionMode = Field(default=VideoExecutionMode.FAKE)
     style_tone: str | None = Field(default=None, max_length=255)
     target_duration_seconds: int | None = Field(default=None, ge=1, le=3_600)
+    language: str | None = Field(default=None, max_length=32)
+    content_format: str | None = Field(default=None, max_length=64)
 
 
 class VideoStepRequest(BaseModel):
@@ -204,6 +209,7 @@ class VideoPipelineResponse(BaseModel):
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    content_format: str | None = None
     visual_template: str = "default"
     performance_label: str = "unknown"
     performance_notes: str | None = None

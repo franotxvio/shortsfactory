@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -37,6 +38,28 @@ from app.schemas.video_production import VideoJobResponse
 import app.api.routes.internal_videos as internal_videos_routes
 import app.services.render_worker as render_worker_module
 import app.workers.video_jobs_worker as video_jobs_worker
+
+
+FORBIDDEN_PORTUGUESE_TERMS = {
+    "voce",
+    "solucao",
+    "pronta",
+    "profissional",
+    "reconstroi",
+    "quebra o problema",
+}
+
+
+def _normalize_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower()
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _assert_no_portuguese_terms(value: str) -> None:
+    normalized = _normalize_text(value)
+    assert not any(term in normalized for term in FORBIDDEN_PORTUGUESE_TERMS), normalized
 
 
 @dataclass
@@ -647,6 +670,66 @@ async def test_fake_viral_micro_short_tts_matches_target_duration_and_caption_bl
 
 
 @pytest.mark.asyncio
+async def test_fake_content_format_video_uses_format_template(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    created = await service.create_local_test_video(
+        topic="Prime Messi vs prime Ronaldo",
+        channel_slug="football-quiz",
+        channel_name="Football Quiz",
+        video_title="Football quiz test",
+        execution_mode=VideoExecutionMode.FAKE,
+        content_format="football_quiz",
+        target_duration_seconds=10,
+    )
+
+    assert created.content_format == "football_quiz"
+    assert created.visual_template == "football_quiz"
+    assert created.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+    assert created.estimated_duration_seconds is not None
+    assert 8 <= created.estimated_duration_seconds <= 15
+    assert len(created.body_blocks or []) <= 5
+    assert created.hook == "Prime showdown:"
+    assert "prime showdown" in (created.script_text or "").lower()
+
+    result = await service.produce_full_video(video_id=created.video_id, visual_template="football_quiz")
+    assert result.video_id == created.video_id
+    assert result.visual_template == "football_quiz"
+    assert Path(result.final_path).exists()
+    assert 8 <= (probe_duration_seconds(Path(result.final_path)) or 0) <= 15
+
+    status = await service.get_status(video_id=created.video_id)
+    assert status.content_format == "football_quiz"
+    assert status.visual_template == "football_quiz"
+
+
+@pytest.mark.asyncio
+async def test_fake_general_quiz_video_uses_format_template(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    created = await service.create_local_test_video(
+        topic="Guess the country from 3 clues",
+        channel_slug="general-quiz",
+        channel_name="General Quiz",
+        video_title="General quiz test",
+        execution_mode=VideoExecutionMode.FAKE,
+        content_format="general_quiz",
+        target_duration_seconds=10,
+    )
+
+    assert created.content_format == "general_quiz"
+    assert created.visual_template == "general_quiz"
+    assert created.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+    assert created.estimated_duration_seconds is not None
+    assert 8 <= created.estimated_duration_seconds <= 15
+    assert len(created.body_blocks or []) <= 5
+    assert created.hook == "Guess the country:"
+    assert "country" in (created.script_text or "").lower()
+
+
+@pytest.mark.asyncio
 async def test_fake_viral_micro_short_full_pipeline_uses_viral_reels_duration(db_session, tmp_path) -> None:
     settings = _build_preset_settings(tmp_path)
     service = VideoProductionService(session=db_session, settings=settings)
@@ -671,6 +754,54 @@ async def test_fake_viral_micro_short_full_pipeline_uses_viral_reels_duration(db
 
     status = await service.get_status(video_id=created.video_id)
     assert status.visual_template == "viral_reels"
+
+
+@pytest.mark.asyncio
+async def test_english_batch_viral_micro_short_stays_native_english(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    result = await service.create_local_test_video(
+        topic="Beginner programmer vs senior programmer",
+        channel_slug="english-dev-shorts",
+        channel_name="English Dev Shorts",
+        video_title="English batch test",
+        execution_mode=VideoExecutionMode.FAKE,
+        style_tone="viral_micro_short",
+        target_duration_seconds=10,
+        language="en",
+    )
+
+    assert result.stage_status == VideoStageStatus.SCRIPT_APPROVED.value
+    assert result.hook == "Beginner programmer:"
+    assert result.call_to_action == ""
+    assert result.estimated_duration_seconds is not None and result.estimated_duration_seconds <= 15
+    assert result.body_blocks == [
+        "copies the solution.",
+        "Senior programmer:",
+        "breaks the problem apart.",
+        "then fixes it twice.",
+    ]
+    _assert_no_portuguese_terms(result.script_text or "")
+
+    tts_result = await service.run_tts(video_id=result.video_id, execution_mode=VideoExecutionMode.FAKE)
+    assert 8 <= (probe_duration_seconds(Path(tts_result.audio_path)) or 0) <= 12
+
+    caption_result = await service.generate_captions(video_id=result.video_id, execution_mode=VideoExecutionMode.FAKE)
+    caption_text = Path(caption_result.caption_path).read_text(encoding="utf-8")
+    assert "Beginner programmer:" in caption_text
+    assert "copies the solution." in caption_text
+    assert "Senior programmer:" in caption_text
+    assert "then fixes it twice." in caption_text
+    _assert_no_portuguese_terms(caption_text)
+
+    blocks = [block for block in caption_text.strip().split("\n\n") if block.strip()]
+    assert blocks
+    for block in blocks:
+        lines = block.splitlines()
+        assert len(lines) >= 3
+        cue_lines = lines[2:]
+        assert 1 <= len(cue_lines) <= 2
 
 
 @pytest.mark.asyncio
@@ -1484,7 +1615,7 @@ async def test_internal_video_preview_viral_reels_changes_render_parameters(
     assert "drawbox=x=0:y=0" in command_text
     assert "BorderStyle=3" in command_text
     assert "BackColour=&HAA101418" in command_text
-    assert "FontSize=26" in command_text
+    assert "FontSize=24" in command_text
 
 
 @pytest.mark.asyncio

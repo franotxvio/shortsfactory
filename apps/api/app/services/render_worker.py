@@ -14,7 +14,7 @@ from app.models.core import Video
 from app.models.enums import VideoStageStatus, WorkflowStatus
 from app.services.media_utils import escape_ffmpeg_path, ensure_parent_dir, probe_duration_seconds, run_command
 
-_VISUAL_TEMPLATES = {"default", "dark_overlay", "big_captions", "viral_reels"}
+_VISUAL_TEMPLATES = {"default", "dark_overlay", "big_captions", "viral_reels", "football_quiz", "general_quiz", "would_you_rather"}
 _DEFAULT_VISUAL_TEMPLATE = "default"
 
 
@@ -149,8 +149,15 @@ class RenderWorker:
         if asset_path.suffix.lower() == ".mp4":
             raise ValueError("Background video assets (.mp4) are not supported yet")
         caption_path = Path(video.caption_path)
-        safe_margin_x = max(64, width // 12)
         template = self._normalize_visual_template(visual_template)
+        channel_slug = video.channel.slug.lower() if video.channel is not None and video.channel.slug else None
+        safe_margin_x = max(64, width // 12)
+        if template == "viral_reels":
+            safe_margin_x = max(42, width // 20)
+        if template in {"football_quiz", "general_quiz", "would_you_rather"}:
+            safe_margin_x = max(48, width // 18)
+        if channel_slug == "english-dev-shorts":
+            safe_margin_x = max(38, width // 22)
         video_duration_seconds = probe_duration_seconds(Path(video.audio_path)) or float(video.target_duration_seconds or 0) or 10.0
         subtitle_font_size, subtitle_margin_v, add_overlay, use_zoompan, use_progress_bar, use_box_style = self._visual_template_params(
             template=template,
@@ -169,6 +176,8 @@ class RenderWorker:
             use_zoompan=use_zoompan,
             use_progress_bar=use_progress_bar,
             use_box_style=use_box_style,
+            template=template,
+            channel_slug=channel_slug,
         )
         command = self._build_render_command(
             asset_path=asset_path,
@@ -235,6 +244,8 @@ class RenderWorker:
         use_zoompan: bool,
         use_progress_bar: bool,
         use_box_style: bool,
+        template: str = _DEFAULT_VISUAL_TEMPLATE,
+        channel_slug: str | None = None,
     ) -> str:
         if use_zoompan:
             video_chain = (
@@ -246,6 +257,10 @@ class RenderWorker:
                 f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
             )
+        if channel_slug == "english-dev-shorts":
+            video_chain += ",eq=brightness=-0.04:contrast=1.12:saturation=1.18"
+            video_chain += ",drawgrid=width=96:height=96:thickness=1:color=0x22d3ee@0.10"
+            video_chain += ",drawbox=x=0:y=0:w=iw:h=ih:color=0x07111b@0.14:t=fill"
         if add_overlay:
             video_chain += ",format=rgba[bg];"
             overlay_opacity = "0.40" if use_zoompan else "0.32"
@@ -258,6 +273,10 @@ class RenderWorker:
             progress_width = f"if(lte(t\\,{video_duration_seconds:.3f})\\,{width}*t/{video_duration_seconds:.3f}\\,{width})"
             video_chain += f",drawbox=x=0:y=0:w={width}:h=18:color=black@0.10:t=fill"
             video_chain += f",drawbox=x=0:y=0:w='{progress_width}':h=8:color=0x22c55e@0.92:t=fill"
+
+        template_overlay = self._template_overlay_chain(template=template, width=width, height=height)
+        if template_overlay:
+            video_chain += template_overlay
 
         if use_box_style:
             subtitles_style = (
@@ -287,14 +306,53 @@ class RenderWorker:
         if template == "big_captions":
             return base_font_size + 10, base_margin_v + 18, False, False, False, True
         if template == "viral_reels":
-            return 26, max(72, height // 20), True, True, True, True
+            return 24, max(64, height // 22), True, True, True, True
+        if template == "football_quiz":
+            return 22, max(82, height // 18), True, True, True, True
+        if template == "general_quiz":
+            return 22, max(78, height // 20), True, False, True, True
+        if template == "would_you_rather":
+            return 22, max(84, height // 20), True, False, True, True
         return base_font_size, base_margin_v, False, False, False, False
+
+    def _template_overlay_chain(self, *, template: str, width: int, height: int) -> str:
+        if template == "football_quiz":
+            return (
+                ",drawbox=x=36:y=40:w=iw-72:h=132:color=0x081b13@0.68:t=fill"
+                ",drawbox=x=54:y=58:w=260:h=40:color=0x22c55e@0.88:t=fill"
+                ",drawbox=x=iw-314:y=58:w=260:h=40:color=0xf59e0b@0.88:t=fill"
+                ",drawtext=text='FOOTBALL QUIZ':fontcolor=white:fontsize=28:x=74:y=66"
+                ",drawtext=text='SCOREBOARD':fontcolor=white:fontsize=22:x=w-290:y=66"
+                ",drawbox=x=44:y=ih-210:w=iw-88:h=168:color=0x07111b@0.42:t=fill"
+                ",drawtext=text='REVEAL CARD':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=h-194"
+            )
+        if template == "general_quiz":
+            return (
+                ",drawbox=x=46:y=42:w=iw-92:h=128:color=0x10182d@0.70:t=fill"
+                ",drawtext=text='GENERAL QUIZ':fontcolor=0x93c5fd:fontsize=28:x=(w-text_w)/2:y=68"
+                ",drawbox=x=56:y=156:w=iw-112:h=132:color=0x111827@0.52:t=fill"
+                ",drawtext=text='CLUE CARD':fontcolor=white:fontsize=22:x=82:y=184"
+                ",drawbox=x=44:y=ih-220:w=iw-88:h=174:color=0x0f172a@0.46:t=fill"
+                ",drawtext=text='ANSWER REVEAL':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=h-198"
+            )
+        if template == "would_you_rather":
+            return (
+                ",drawbox=x=44:y=44:w=iw-88:h=120:color=0x18181b@0.72:t=fill"
+                ",drawtext=text='WOULD YOU RATHER':fontcolor=white:fontsize=26:x=(w-text_w)/2:y=68"
+                ",drawbox=x=52:y=170:w=(iw-114)/2:h=238:color=0x2563eb@0.42:t=fill"
+                ",drawbox=x=iw/2+10:y=170:w=(iw-114)/2:h=238:color=0xf97316@0.42:t=fill"
+                ",drawtext=text='A':fontcolor=white:fontsize=36:x=96:y=198"
+                ",drawtext=text='B':fontcolor=white:fontsize=36:x=w/2+54:y=198"
+                ",drawbox=x=44:y=ih-210:w=iw-88:h=168:color=0x09090b@0.40:t=fill"
+                ",drawtext=text='PICK A SIDE':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=h-192"
+            )
+        return ""
 
     def _normalize_visual_template(self, value: str) -> str:
         template = value.strip().lower()
         if template not in _VISUAL_TEMPLATES:
             raise ValueError(
-                "Unknown visual template. Allowed values: default, dark_overlay, big_captions, viral_reels"
+                "Unknown visual template. Allowed values: default, dark_overlay, big_captions, viral_reels, football_quiz, general_quiz, would_you_rather"
             )
         return template
 
@@ -331,7 +389,7 @@ class RenderWorker:
         )
 
     async def _require_video_assets(self, video_id: int) -> Video:
-        statement = select(Video).options(selectinload(Video.asset)).where(Video.id == video_id)
+        statement = select(Video).options(selectinload(Video.asset), selectinload(Video.channel)).where(Video.id == video_id)
         video = await self.session.scalar(statement)
         if video is None:
             raise ValueError(f"Video {video_id} not found")

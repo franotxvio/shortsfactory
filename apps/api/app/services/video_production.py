@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.models.core import AssetPool, Channel, Script, Video
 from app.models.enums import LifecycleStatus, VideoExecutionMode, VideoStageStatus, WorkflowStatus
+from app.services.content_format_engine import build_content_format_pack, default_visual_template_for_format, infer_content_format, normalize_content_format
 from app.services.content_brain import ContentBrainService
 from app.services.asset_pool_service import AssetPoolService
 from app.services.caption_worker import CaptionWorker
@@ -29,14 +30,16 @@ from app.services.script_engine import (
     _VIRAL_MICRO_SHORT_DEFAULT_DURATION_SECONDS,
     _VIRAL_MICRO_SHORT_MAX_DURATION_SECONDS,
     _VIRAL_MICRO_SHORT_STYLE,
+    _is_english_language,
     _is_viral_micro_short_mode,
+    _normalize_language_value,
     _viral_micro_short_body_blocks,
     _viral_micro_short_hook,
 )
 from app.services.tts_worker import TTSWorker
 
 
-_CHANNEL_PRESET_ALLOWED_TEMPLATES = {"default", "dark_overlay", "big_captions", "viral_reels"}
+_CHANNEL_PRESET_ALLOWED_TEMPLATES = {"default", "dark_overlay", "big_captions", "viral_reels", "football_quiz", "general_quiz", "would_you_rather"}
 
 
 @dataclass(slots=True)
@@ -71,6 +74,7 @@ class VideoProductionResult:
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    content_format: str | None = None
     visual_template: str = "default"
     target_duration_seconds: int | None = None
     performance_label: str = "unknown"
@@ -122,6 +126,7 @@ class VideoPipelineState:
     call_to_action: str | None = None
     estimated_duration_seconds: int | None = None
     style_tone: str | None = None
+    content_format: str | None = None
     visual_template: str = "default"
     target_duration_seconds: int | None = None
     performance_label: str = "unknown"
@@ -228,6 +233,7 @@ class VideoProductionService:
             winning_signals_count=final_state.winning_signals_count,
             weak_signals_count=final_state.weak_signals_count,
             applied_reason_tags=final_state.applied_reason_tags,
+            visual_template=final_state.visual_template,
             youtube_publish_path=final_state.youtube_publish_path,
             youtube_publish_title=final_state.youtube_publish_title,
             youtube_publish_description=final_state.youtube_publish_description,
@@ -267,6 +273,7 @@ class VideoProductionService:
                     call_to_action=script_metadata["call_to_action"],
                     estimated_duration_seconds=script_metadata["estimated_duration_seconds"],
                     style_tone=script_metadata["style_tone"],
+                    content_format=script_metadata["content_format"],
                     content_brain_context_used=bool(script_metadata["content_brain_context_used"]),
                     winning_signals_count=int(script_metadata["winning_signals_count"] or 0),
                     weak_signals_count=int(script_metadata["weak_signals_count"] or 0),
@@ -285,7 +292,11 @@ class VideoProductionService:
         execution_mode: VideoExecutionMode = VideoExecutionMode.FAKE,
         style_tone: str | None = None,
         target_duration_seconds: int | None = None,
+        language: str | None = None,
+        content_format: str | None = None,
     ) -> VideoPipelineState:
+        effective_language = language or ("en" if channel_slug.lower().startswith("english-") else None)
+        effective_content_format = infer_content_format(channel_slug=channel_slug, explicit_format=content_format)
         preset = await self.get_channel_preset(channel_slug=channel_slug)
         if self.session.in_transaction():
             await self.session.rollback()
@@ -298,6 +309,8 @@ class VideoProductionService:
                 preset=preset,
                 style_tone=style_tone,
                 target_duration_seconds=target_duration_seconds,
+                language=effective_language,
+                content_format=effective_content_format,
             )
         return await self._create_fake_test_video(
             topic=topic,
@@ -307,6 +320,8 @@ class VideoProductionService:
             preset=preset,
             style_tone=style_tone,
             target_duration_seconds=target_duration_seconds,
+            language=effective_language,
+            content_format=effective_content_format,
         )
 
     async def list_channel_presets(self) -> list[ChannelPresetRecord]:
@@ -653,6 +668,7 @@ class VideoProductionService:
             call_to_action=script_metadata["call_to_action"],
             estimated_duration_seconds=script_metadata["estimated_duration_seconds"],
             style_tone=script_metadata["style_tone"],
+            content_format=script_metadata["content_format"],
         )
 
         export_dir = self._export_package_dir(video.slug)
@@ -860,6 +876,7 @@ class VideoProductionService:
             call_to_action=script_metadata["call_to_action"],
             estimated_duration_seconds=script_metadata["estimated_duration_seconds"],
             style_tone=script_metadata["style_tone"],
+            content_format=script_metadata["content_format"],
         )
 
     async def _create_fake_test_video(
@@ -872,6 +889,8 @@ class VideoProductionService:
         preset: ChannelPresetRecord | None = None,
         style_tone: str | None = None,
         target_duration_seconds: int | None = None,
+        language: str | None = None,
+        content_format: str | None = None,
     ) -> VideoPipelineState:
         async with self.session.begin():
             channel_name_to_use = preset.channel_name if preset is not None else channel_name
@@ -882,14 +901,43 @@ class VideoProductionService:
                 if target_duration_seconds is not None
                 else (preset.target_duration_seconds if preset is not None else None)
             )
-            effective_style_tone = style_tone if style_tone is not None else (preset.default_topic_style if preset is not None else None)
+            preset_content_format = normalize_content_format(preset.default_topic_style if preset is not None else None)
+            effective_content_format = content_format or preset_content_format
+            format_pack = (
+                build_content_format_pack(
+                    effective_content_format,
+                    topic=topic,
+                    target_duration_seconds=target_duration,
+                    language=language,
+                )
+                if effective_content_format is not None
+                else None
+            )
+            if target_duration is None and format_pack is not None:
+                target_duration = format_pack.estimated_duration_seconds
+            effective_style_tone = (
+                style_tone
+                if style_tone is not None
+                else (
+                    format_pack.style_tone
+                    if format_pack is not None
+                    else (preset.default_topic_style if preset is not None else None)
+                )
+            )
+            effective_visual_template = (
+                default_visual_template_for_format(effective_content_format)
+                if effective_content_format is not None
+                else (preset.default_visual_template if preset is not None and preset.default_visual_template else None)
+            )
+            if format_pack is not None and effective_visual_template is None:
+                effective_visual_template = format_pack.visual_template
             content_brain_context = await self.content_brain_service.build_script_context(
                 channel_slug=channel_slug,
                 topic=topic,
             )
             video = Video(
                 channel_id=channel.id,
-                title=video_title or f"Teste local: {topic}",
+                title=video_title or (format_pack.title if format_pack is not None else f"Teste local: {topic}"),
                 slug=video_slug,
                 status=WorkflowStatus.APPROVED,
                 stage_status=VideoStageStatus.SCRIPT_APPROVED,
@@ -903,7 +951,9 @@ class VideoProductionService:
                 style_tone=effective_style_tone,
                 default_cta=preset.default_cta if preset is not None else None,
                 target_duration_seconds=target_duration,
+                language=language,
                 content_brain_context=content_brain_context,
+                content_format=effective_content_format,
             )
             content_brain_context_used = bool(script_content.get("content_brain_context_used"))
             winning_signals_count = int(script_content.get("winning_signals_count") or 0)
@@ -918,8 +968,8 @@ class VideoProductionService:
                 video.asset_id = preset_asset.id
                 video.asset = preset_asset
                 await self.session.flush()
-            if preset is not None and preset.default_visual_template:
-                self.render_worker.set_visual_template(video_id=video.id, visual_template=preset.default_visual_template)
+            if effective_visual_template is not None:
+                self.render_worker.set_visual_template(video_id=video.id, visual_template=effective_visual_template)
             else:
                 self.render_worker.set_visual_template(video_id=video.id, visual_template="default")
             script = Script(
@@ -927,7 +977,7 @@ class VideoProductionService:
                 topic=topic,
                 version=1,
                 status=WorkflowStatus.APPROVED,
-                idea=f"Explique {topic} de forma simples.",
+                idea=format_pack.title if format_pack is not None else f"Explique {topic} de forma simples.",
                 hook=script_content["hook"],
                 content=script_content["script"],
                 notes="Script local deterministico para fluxo manual.",
@@ -949,6 +999,7 @@ class VideoProductionService:
                         "applied_reason_tags": applied_reason_tags,
                     },
                     "script": script_content,
+                    "content_format": effective_content_format,
                 },
                 llm_model="local-fake",
                 llm_cache_key=None,
@@ -975,7 +1026,8 @@ class VideoProductionService:
                 call_to_action=script_content["call_to_action"],
                 estimated_duration_seconds=script_content["estimated_duration_seconds"],
                 style_tone=script_content["style_tone"],
-                visual_template=preset.default_visual_template if preset is not None else None,
+                content_format=effective_content_format,
+                visual_template=effective_visual_template,
                 target_duration_seconds=target_duration,
                 content_brain_context_used=content_brain_context_used,
                 winning_signals_count=winning_signals_count,
@@ -999,18 +1051,42 @@ class VideoProductionService:
         preset: ChannelPresetRecord | None = None,
         style_tone: str | None = None,
         target_duration_seconds: int | None = None,
+        language: str | None = None,
+        content_format: str | None = None,
     ) -> VideoPipelineState:
         service = ScriptEngineService(session=self.session, settings=self.settings)
         content_brain_context = await self.content_brain_service.build_script_context(
             channel_slug=channel_slug,
             topic=topic,
         )
-        effective_style_tone = style_tone if style_tone is not None else (preset.default_topic_style if preset is not None else None)
+        preset_content_format = normalize_content_format(preset.default_topic_style if preset is not None else None)
+        effective_content_format = content_format or preset_content_format
+        format_pack = (
+            build_content_format_pack(
+                effective_content_format,
+                topic=topic,
+                target_duration_seconds=target_duration_seconds,
+                language=language,
+            )
+            if effective_content_format is not None
+            else None
+        )
+        effective_style_tone = (
+            style_tone
+            if style_tone is not None
+            else (
+                format_pack.style_tone
+                if format_pack is not None
+                else (preset.default_topic_style if preset is not None else None)
+            )
+        )
         effective_target_duration = (
             target_duration_seconds
             if target_duration_seconds is not None
             else (preset.target_duration_seconds if preset is not None else None)
         )
+        if effective_target_duration is None and format_pack is not None:
+            effective_target_duration = format_pack.estimated_duration_seconds
         result = await service.create_test_script(
             topic=topic,
             channel_slug=channel_slug,
@@ -1020,7 +1096,9 @@ class VideoProductionService:
             style_tone=effective_style_tone,
             default_call_to_action=preset.default_cta if preset is not None else None,
             target_duration_seconds=effective_target_duration,
+            language=language,
             content_brain_context=content_brain_context,
+            content_format=effective_content_format,
         )
         statement = select(Video).options(selectinload(Video.channel), selectinload(Video.asset)).where(Video.id == result.video_id)
         video = await self.session.scalar(statement)
@@ -1035,8 +1113,15 @@ class VideoProductionService:
             )
             video.asset_id = preset_asset.id
             video.asset = preset_asset
-        if preset is not None and preset.default_visual_template:
-            self.render_worker.set_visual_template(video_id=video.id, visual_template=preset.default_visual_template)
+        effective_visual_template = (
+            default_visual_template_for_format(effective_content_format)
+            if effective_content_format is not None
+            else (preset.default_visual_template if preset is not None and preset.default_visual_template else None)
+        )
+        if format_pack is not None and effective_visual_template is None:
+            effective_visual_template = format_pack.visual_template
+        if effective_visual_template is not None:
+            self.render_worker.set_visual_template(video_id=video.id, visual_template=effective_visual_template)
         else:
             self.render_worker.set_visual_template(video_id=video.id, visual_template="default")
         await self.session.flush()
@@ -1058,7 +1143,8 @@ class VideoProductionService:
             call_to_action=result.call_to_action,
             estimated_duration_seconds=result.estimated_duration_seconds,
             style_tone=result.style_tone,
-            visual_template=preset.default_visual_template if preset is not None else None,
+            content_format=effective_content_format,
+            visual_template=effective_visual_template,
             target_duration_seconds=video.target_duration_seconds,
             content_brain_context_used=result.content_brain_context_used,
             winning_signals_count=result.winning_signals_count,
@@ -1135,6 +1221,7 @@ class VideoProductionService:
         call_to_action: str | None = None,
         estimated_duration_seconds: int | None = None,
         style_tone: str | None = None,
+        content_format: str | None = None,
         content_brain_context_used: bool = False,
         winning_signals_count: int = 0,
         weak_signals_count: int = 0,
@@ -1178,6 +1265,7 @@ class VideoProductionService:
             call_to_action=call_to_action,
             estimated_duration_seconds=estimated_duration_seconds,
             style_tone=style_tone,
+            content_format=content_format,
             content_brain_context_used=content_brain_context_used,
             winning_signals_count=winning_signals_count,
             weak_signals_count=weak_signals_count,
@@ -1223,6 +1311,7 @@ class VideoProductionService:
             call_to_action=state.call_to_action,
             estimated_duration_seconds=state.estimated_duration_seconds,
             style_tone=state.style_tone,
+            content_format=state.content_format,
             visual_template=state.visual_template,
             target_duration_seconds=state.target_duration_seconds,
             performance_label=state.performance_label,
@@ -1258,10 +1347,24 @@ class VideoProductionService:
         style_tone: str | None = None,
         default_cta: str | None = None,
         target_duration_seconds: int | None = None,
+        language: str | None = None,
         content_brain_context: dict[str, object] | None = None,
+        content_format: str | None = None,
     ) -> dict[str, object]:
         topic_text = topic.strip() or "o tema"
-        viral_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds)
+        language_value = _normalize_language_value(language)
+        content_format_value = normalize_content_format(content_format or str((content_brain_context or {}).get("content_format") or ""))
+        format_pack = (
+            build_content_format_pack(
+                content_format_value,
+                topic=topic_text,
+                target_duration_seconds=target_duration_seconds,
+                language=language_value,
+            )
+            if content_format_value is not None
+            else None
+        )
+        viral_mode = _is_viral_micro_short_mode(style_tone, target_duration_seconds) or content_format_value is not None
         winning_patterns = []
         weak_patterns = []
         if isinstance(content_brain_context, dict):
@@ -1290,10 +1393,19 @@ class VideoProductionService:
             unicodedata.normalize("NFKD", tag).encode("ascii", "ignore").decode("ascii").lower().strip()
             for tag in weak_tags
         }
-        if viral_mode:
-            hook = _viral_micro_short_hook(topic_text)
-            body_blocks = _viral_micro_short_body_blocks(topic_text)
+        if format_pack is not None:
+            hook = format_pack.hook
+            body_blocks = list(format_pack.body_blocks)
+            call_to_action = format_pack.call_to_action
+            estimated_duration_seconds = format_pack.estimated_duration_seconds
+            style_tone = format_pack.style_tone
+            title = format_pack.title
+        elif viral_mode:
+            hook = _viral_micro_short_hook(topic_text, language=language_value)
+            body_blocks = _viral_micro_short_body_blocks(topic_text, language=language_value)
             call_to_action = ""
+            if _is_english_language(language_value):
+                body_blocks = _viral_micro_short_body_blocks(topic_text, language=language_value)
             if isinstance(target_duration_seconds, int) and target_duration_seconds > 0:
                 estimated_duration_seconds = max(
                     6,
@@ -1302,6 +1414,7 @@ class VideoProductionService:
             else:
                 estimated_duration_seconds = _VIRAL_MICRO_SHORT_DEFAULT_DURATION_SECONDS
             style_tone = _VIRAL_MICRO_SHORT_STYLE
+            title = f"Short script: {topic_text}" if _is_english_language(language_value) else f"Roteiro curto: {topic_text}"
         else:
             hook = f"Voce ja viu {topic_text} por este angulo?"
             body_count = 3 + int(hashlib.sha256(topic_text.encode("utf-8")).hexdigest()[:2], 16) % 3
@@ -1332,6 +1445,7 @@ class VideoProductionService:
             if "cta" in normalized_winning_tags:
                 call_to_action = "Se isso fez sentido, salva e manda para quem precisa ver esse atalho."
             estimated_duration_seconds = target_duration_seconds if target_duration_seconds is not None else 24 + len(body_blocks) * 6
+            title = f"Roteiro curto: {topic_text}"
         script_text = _build_consolidated_script_text(hook, body_blocks, call_to_action)
         applied_reason_tags = []
         applied_reason_tags.extend(winning_tags[:3])
@@ -1342,7 +1456,7 @@ class VideoProductionService:
         if call_to_action.strip():
             beats.append("cta")
         return {
-            "title": f"Roteiro curto: {topic_text}",
+            "title": title,
             "hook": hook,
             "body_blocks": body_blocks,
             "call_to_action": call_to_action,
@@ -1350,10 +1464,12 @@ class VideoProductionService:
             "style_tone": style_tone or ("viral_micro_short" if viral_mode else "didatico e direto"),
             "script": script_text,
             "beats": beats,
+            "language": language_value or None,
             "content_brain_context_used": bool(winning_patterns or weak_patterns),
             "winning_signals_count": len(winning_patterns),
             "weak_signals_count": len(weak_patterns),
             "applied_reason_tags": applied_reason_tags,
+            "content_format": content_format_value,
             "content_brain_context": content_brain_context,
         }
 
@@ -1373,6 +1489,7 @@ class VideoProductionService:
                 "call_to_action": None,
                 "estimated_duration_seconds": None,
                 "style_tone": None,
+                "content_format": None,
                 "content_brain_context_used": False,
                 "winning_signals_count": 0,
                 "weak_signals_count": 0,
@@ -1399,6 +1516,12 @@ class VideoProductionService:
                 body_blocks=body_blocks,
                 call_to_action=call_to_action,
             )
+        content_format = str(
+            script_payload.get("content_format")
+            or generation_payload.get("content_format")
+            or generation_payload.get("format")
+            or ""
+        ).strip() or None
         content_brain_payload = generation_payload.get("content_brain") if isinstance(generation_payload, dict) else None
         content_brain_context_used = bool(content_brain_payload.get("context_used")) if isinstance(content_brain_payload, dict) else False
         winning_signals_count = int(content_brain_payload.get("winning_signals_count") or 0) if isinstance(content_brain_payload, dict) else 0
@@ -1413,6 +1536,7 @@ class VideoProductionService:
             "call_to_action": call_to_action,
             "estimated_duration_seconds": estimated_duration_seconds,
             "style_tone": style_tone,
+            "content_format": content_format,
             "content_brain_context_used": content_brain_context_used,
             "winning_signals_count": winning_signals_count,
             "weak_signals_count": weak_signals_count,
@@ -1443,6 +1567,7 @@ class VideoProductionService:
         current_body_blocks: list[str] | None = None
         current_call_to_action: str | None = None
         current_style_tone = None
+        current_content_format = None
         current_duration = None
 
         generation_payload = existing_script.generation_payload if isinstance(existing_script.generation_payload, dict) else {}
@@ -1451,6 +1576,7 @@ class VideoProductionService:
             current_body_blocks = self._coerce_string_list(existing_script_payload.get("body_blocks")) or None
             current_call_to_action = str(existing_script_payload.get("call_to_action") or "").strip() or None
             current_style_tone = str(existing_script_payload.get("style_tone") or "").strip() or None
+            current_content_format = normalize_content_format(str(existing_script_payload.get("content_format") or ""))
             current_duration_raw = existing_script_payload.get("estimated_duration_seconds")
             if isinstance(current_duration_raw, int) and current_duration_raw > 0:
                 current_duration = current_duration_raw
@@ -1491,7 +1617,9 @@ class VideoProductionService:
             current_style_tone = "didatico e direto"
 
         return {
-            "title": f"Roteiro curto: {existing_script.topic or existing_script.video_id}",
+            "title": f"Short script: {existing_script.topic or existing_script.video_id}"
+            if current_style_tone == "viral_micro_short"
+            else f"Roteiro curto: {existing_script.topic or existing_script.video_id}",
             "hook": current_hook or "",
             "body_blocks": normalized_body_blocks,
             "call_to_action": current_call_to_action or "",
@@ -1499,6 +1627,7 @@ class VideoProductionService:
             "style_tone": current_style_tone,
             "script": normalized_script_text,
             "beats": ["hook", *[f"body_{index + 1}" for index in range(len(normalized_body_blocks))], "cta"],
+            "content_format": current_content_format,
         }
 
     def _coerce_string_list(self, value: object) -> list[str]:
@@ -1825,7 +1954,7 @@ class VideoProductionService:
         template = value.strip().lower()
         if template not in _CHANNEL_PRESET_ALLOWED_TEMPLATES:
             raise ValueError(
-                "Unknown visual template. Allowed values: default, dark_overlay, big_captions, viral_reels"
+                "Unknown visual template. Allowed values: default, dark_overlay, big_captions, viral_reels, football_quiz, general_quiz, would_you_rather"
             )
         return template
 
