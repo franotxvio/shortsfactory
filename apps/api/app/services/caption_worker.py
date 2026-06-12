@@ -11,6 +11,7 @@ from app.models.core import Script, Video
 from app.models.enums import VideoStageStatus, WorkflowStatus
 from app.services.media_utils import (
     build_srt_from_text,
+    build_srt_from_segments,
     ensure_parent_dir,
     estimate_duration_from_text,
     escape_ffmpeg_path,
@@ -54,7 +55,11 @@ class CaptionWorker:
 
         if not used_whisper:
             duration = probe_duration_seconds(Path(video.audio_path)) or estimate_duration_from_text(script.content)
-            srt = build_srt_from_text(script.content, duration)
+            segments = self._extract_caption_segments(script)
+            if segments:
+                srt = build_srt_from_segments(segments, duration)
+            else:
+                srt = build_srt_from_text(script.content, duration)
             write_text_file(caption_path, srt)
 
         video.caption_path = str(caption_path)
@@ -89,3 +94,29 @@ class CaptionWorker:
         if script is None:
             raise ValueError("Approved script is required before captions")
         return script
+
+    def _extract_caption_segments(self, script: Script) -> list[str]:
+        generation_payload = script.generation_payload if isinstance(script.generation_payload, dict) else {}
+        script_payload = generation_payload.get("script") if isinstance(generation_payload.get("script"), dict) else {}
+        style_tone = str(script_payload.get("style_tone") or "").strip().lower()
+        estimated_duration_seconds = script_payload.get("estimated_duration_seconds")
+        is_viral = style_tone == "viral_micro_short" or (
+            isinstance(estimated_duration_seconds, int) and 0 < estimated_duration_seconds <= 15
+        )
+        if not is_viral:
+            return []
+
+        segments: list[str] = []
+        hook = str(script_payload.get("hook") or script.hook or "").strip()
+        if hook:
+            segments.append(hook)
+        body_blocks = script_payload.get("body_blocks")
+        if isinstance(body_blocks, list):
+            for block in body_blocks:
+                text = str(block).strip()
+                if text:
+                    segments.append(text)
+        call_to_action = str(script_payload.get("call_to_action") or script_payload.get("cta") or "").strip()
+        if call_to_action:
+            segments.append(call_to_action)
+        return segments

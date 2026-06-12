@@ -222,6 +222,7 @@ class AssetPoolService:
                     Path(asset.source_path) if asset.source_path else None,
                     asset.asset_type,
                 )
+                video.asset = asset
                 return self._build_selection_result(video_id=video.id, asset=asset)
             raise ValueError("Asset can only be changed before preview is generated")
 
@@ -253,6 +254,7 @@ class AssetPoolService:
             raise ValueError("Asset can only be selected after captions are generated")
 
         video.asset_id = asset.id
+        video.asset = asset
         video.stage_status = VideoStageStatus.ASSET_READY
         await self.session.flush()
         return self._build_selection_result(video_id=video.id, asset=asset)

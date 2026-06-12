@@ -36,7 +36,7 @@ from app.services.script_engine import (
 from app.services.tts_worker import TTSWorker
 
 
-_CHANNEL_PRESET_ALLOWED_TEMPLATES = {"default", "dark_overlay", "big_captions"}
+_CHANNEL_PRESET_ALLOWED_TEMPLATES = {"default", "dark_overlay", "big_captions", "viral_reels"}
 
 
 @dataclass(slots=True)
@@ -145,13 +145,17 @@ class VideoPipelineState:
 
 
 class _DeterministicTTSClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, duration_seconds: float = 2.0) -> None:
         self._settings = settings
+        self._duration_seconds = duration_seconds
         self._audio_bytes: bytes | None = None
 
     async def generate_tts_audio(self, *, text: str, model: str, voice: str) -> tuple[bytes, str]:
         if self._audio_bytes is None:
-            self._audio_bytes = build_deterministic_mp3_bytes(ffmpeg_path=self._settings.ffmpeg_path)
+            self._audio_bytes = build_deterministic_mp3_bytes(
+                ffmpeg_path=self._settings.ffmpeg_path,
+                duration_seconds=self._duration_seconds,
+            )
         return self._audio_bytes, "local-fake-tts"
 
 
@@ -425,7 +429,10 @@ class VideoProductionService:
         )
 
     async def run_tts(self, *, video_id: int, execution_mode: VideoExecutionMode = VideoExecutionMode.FAKE):
-        worker = self._build_tts_worker(execution_mode)
+        fake_duration_seconds = None
+        if execution_mode == VideoExecutionMode.FAKE and self._provided_tts_worker is None:
+            fake_duration_seconds = await self._resolve_fake_tts_duration_seconds(video_id=video_id)
+        worker = self._build_tts_worker(execution_mode, fake_duration_seconds=fake_duration_seconds)
         return await worker.generate(video_id=video_id)
 
     async def generate_captions(
@@ -1074,7 +1081,12 @@ class VideoProductionService:
         await self.session.flush()
         return channel
 
-    def _build_tts_worker(self, execution_mode: VideoExecutionMode) -> TTSWorker:
+    def _build_tts_worker(
+        self,
+        execution_mode: VideoExecutionMode,
+        *,
+        fake_duration_seconds: float | None = None,
+    ) -> TTSWorker:
         if execution_mode == VideoExecutionMode.FAKE and self._provided_tts_worker is not None:
             return self._provided_tts_worker
         if execution_mode == VideoExecutionMode.REAL:
@@ -1083,10 +1095,25 @@ class VideoProductionService:
             return TTSWorker(session=self.session, settings=self.settings)
         return TTSWorker(
             session=self.session,
-            client=_DeterministicTTSClient(self.settings),
+            client=_DeterministicTTSClient(
+                self.settings,
+                duration_seconds=fake_duration_seconds if fake_duration_seconds is not None else 2.0,
+            ),
             settings=self.settings,
             record_cost_log=False,
         )
+
+    async def _resolve_fake_tts_duration_seconds(self, *, video_id: int) -> float:
+        state = await self.get_status(video_id=video_id)
+        style_tone = str(state.style_tone or "").strip().lower()
+        target_duration = state.target_duration_seconds if isinstance(state.target_duration_seconds, int) else None
+        estimated_duration = state.estimated_duration_seconds if isinstance(state.estimated_duration_seconds, int) else None
+        if style_tone == "viral_micro_short" or (target_duration is not None and target_duration <= 15):
+            duration = target_duration or estimated_duration or 10
+            return float(max(6, min(duration, 15)))
+        if estimated_duration is not None and estimated_duration <= 15:
+            return float(max(6, estimated_duration))
+        return 2.0
 
     def _build_state(
         self,
@@ -1797,7 +1824,9 @@ class VideoProductionService:
     def _normalize_visual_template(self, value: str) -> str:
         template = value.strip().lower()
         if template not in _CHANNEL_PRESET_ALLOWED_TEMPLATES:
-            raise ValueError("Unknown visual template. Allowed values: default, dark_overlay, big_captions")
+            raise ValueError(
+                "Unknown visual template. Allowed values: default, dark_overlay, big_captions, viral_reels"
+            )
         return template
 
     async def _get_asset_by_slug(self, asset_slug: str) -> AssetPool | None:

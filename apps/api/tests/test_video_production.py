@@ -27,6 +27,7 @@ from app.schemas.video_production import VideoProductionResponse
 from app.services.llm_types import LLMResult, LLMUsage
 from app.services.openai_client import OpenAIJSONClient
 from app.services.openai_client import LLMJSONClient
+from app.services.media_utils import probe_duration_seconds
 from app.services.video_job_queue import VideoJobQueueService, get_video_job_queue_service
 from app.services.script_engine import ScriptEngineService
 from app.services.tts_worker import TTSWorker
@@ -615,6 +616,61 @@ async def test_create_local_test_video_supports_viral_micro_short_mode(db_sessio
     assert result.call_to_action == ""
     assert result.hook is not None and len(result.hook) <= 40 and result.hook.endswith(":")
     assert "na pratica" not in (result.script_text or "")
+
+
+@pytest.mark.asyncio
+async def test_fake_viral_micro_short_tts_matches_target_duration_and_caption_blocks(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    result = await service.create_local_test_video(
+        topic="Programador iniciante vs tester",
+        channel_slug="viral-channel",
+        channel_name="Viral Channel",
+        video_title="Teste viral",
+        execution_mode=VideoExecutionMode.FAKE,
+        style_tone="viral_micro_short",
+        target_duration_seconds=10,
+    )
+
+    tts_result = await service.run_tts(video_id=result.video_id, execution_mode=VideoExecutionMode.FAKE)
+    audio_duration = probe_duration_seconds(Path(tts_result.audio_path))
+    assert audio_duration is not None
+    assert 8 <= audio_duration <= 12
+
+    caption_result = await service.generate_captions(video_id=result.video_id, execution_mode=VideoExecutionMode.FAKE)
+    caption_text = Path(caption_result.caption_path).read_text(encoding="utf-8")
+    assert "00:00:00,000 --> 00:00:02,000" in caption_text
+    assert "00:00:08,000 --> 00:00:10,000" in caption_text
+    assert "programador real:" in caption_text
+    assert caption_text.count("\n\n") >= 4
+
+
+@pytest.mark.asyncio
+async def test_fake_viral_micro_short_full_pipeline_uses_viral_reels_duration(db_session, tmp_path) -> None:
+    settings = _build_preset_settings(tmp_path)
+    service = VideoProductionService(session=db_session, settings=settings)
+
+    created = await service.create_local_test_video(
+        topic="Programador iniciante vs tester",
+        channel_slug="viral-channel",
+        channel_name="Viral Channel",
+        video_title="Teste viral",
+        execution_mode=VideoExecutionMode.FAKE,
+        style_tone="viral_micro_short",
+        target_duration_seconds=10,
+    )
+
+    result = await service.produce_full_video(video_id=created.video_id, visual_template="viral_reels")
+
+    assert result.video_id == created.video_id
+    assert Path(result.final_path).exists()
+    final_duration = probe_duration_seconds(Path(result.final_path))
+    assert final_duration is not None
+    assert 8 <= final_duration <= 12
+
+    status = await service.get_status(video_id=created.video_id)
+    assert status.visual_template == "viral_reels"
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1439,52 @@ async def test_internal_video_preview_dark_overlay_changes_render_parameters(
     command_text = " ".join(commands[0])
     assert "color=c=black@0.32" in command_text
     assert "FontSize=30" in command_text
+
+
+@pytest.mark.asyncio
+async def test_internal_video_preview_viral_reels_changes_render_parameters(
+    db_session,
+    temp_database_url: str,
+    monkeypatch,
+) -> None:
+    async def _override_async_session():
+        engine = create_async_engine(temp_database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    commands: list[list[str]] = []
+
+    def _fake_run_command(command: list[str]) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(render_worker_module, "run_command", _fake_run_command)
+
+    video = await _create_video_ready_for_preview(db_session, slug_suffix="viral")
+
+    app.dependency_overrides[get_async_session] = _override_async_session
+    try:
+        with TestClient(app) as client:
+            preview_response = client.post(
+                f"/internal/videos/{video.id}/preview",
+                json={"visual_template": "viral_reels"},
+            )
+            assert preview_response.status_code == 200
+            preview_state = VideoPipelineResponse.model_validate(preview_response.json())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert preview_state.visual_template == "viral_reels"
+    assert commands
+    command_text = " ".join(commands[0])
+    assert "zoompan=" in command_text
+    assert "drawbox=x=0:y=0" in command_text
+    assert "BorderStyle=3" in command_text
+    assert "BackColour=&HAA101418" in command_text
+    assert "FontSize=26" in command_text
 
 
 @pytest.mark.asyncio

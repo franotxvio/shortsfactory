@@ -1547,6 +1547,7 @@ export default function DashboardPage() {
                   <option value="default">default</option>
                   <option value="dark_overlay">dark_overlay</option>
                   <option value="big_captions">big_captions</option>
+                  <option value="viral_reels">viral_reels</option>
                 </select>
               </label>
               <label className="field">
@@ -1833,6 +1834,7 @@ export default function DashboardPage() {
                       <option value="default">default</option>
                       <option value="dark_overlay">dark_overlay</option>
                       <option value="big_captions">big_captions</option>
+                      <option value="viral_reels">viral_reels</option>
                     </select>
                   </label>
                   <p className="helper">

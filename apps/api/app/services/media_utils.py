@@ -97,6 +97,26 @@ def build_srt_from_text(text: str, duration_seconds: float | None = None) -> str
     return "\n".join(lines)
 
 
+def build_srt_from_segments(segments: list[str], duration_seconds: float | None = None) -> str:
+    clean_segments = [segment.strip() for segment in segments if segment and segment.strip()]
+    if not clean_segments:
+        return "1\n00:00:00,000 --> 00:00:04,000\n\n"
+
+    duration = duration_seconds or max(4.0, float(len(clean_segments) * 2))
+    segment_duration = duration / max(1, len(clean_segments))
+    lines: list[str] = []
+    for index, segment in enumerate(clean_segments, start=1):
+        start_seconds = (index - 1) * segment_duration
+        end_seconds = min(duration, index * segment_duration)
+        lines.append(str(index))
+        lines.append(
+            f"{seconds_to_srt_timestamp(start_seconds)} --> {seconds_to_srt_timestamp(end_seconds)}"
+        )
+        lines.append(segment)
+        lines.append("")
+    return "\n".join(lines)
+
+
 def build_deterministic_mp3_bytes(*, ffmpeg_path: str, duration_seconds: float = 2.0) -> bytes:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "deterministic-audio.mp3"

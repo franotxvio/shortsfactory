@@ -12,9 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.models.core import Video
 from app.models.enums import VideoStageStatus, WorkflowStatus
-from app.services.media_utils import escape_ffmpeg_path, ensure_parent_dir, run_command
+from app.services.media_utils import escape_ffmpeg_path, ensure_parent_dir, probe_duration_seconds, run_command
 
-_VISUAL_TEMPLATES = {"default", "dark_overlay", "big_captions"}
+_VISUAL_TEMPLATES = {"default", "dark_overlay", "big_captions", "viral_reels"}
 _DEFAULT_VISUAL_TEMPLATE = "default"
 
 
@@ -151,7 +151,8 @@ class RenderWorker:
         caption_path = Path(video.caption_path)
         safe_margin_x = max(64, width // 12)
         template = self._normalize_visual_template(visual_template)
-        subtitle_font_size, subtitle_margin_v, add_overlay = self._visual_template_params(
+        video_duration_seconds = probe_duration_seconds(Path(video.audio_path)) or float(video.target_duration_seconds or 0) or 10.0
+        subtitle_font_size, subtitle_margin_v, add_overlay, use_zoompan, use_progress_bar, use_box_style = self._visual_template_params(
             template=template,
             width=width,
             height=height,
@@ -160,10 +161,14 @@ class RenderWorker:
             caption_path=caption_path,
             width=width,
             height=height,
+            video_duration_seconds=video_duration_seconds,
             subtitle_font_size=subtitle_font_size,
             subtitle_margin_v=subtitle_margin_v,
             safe_margin_x=safe_margin_x,
             add_overlay=add_overlay,
+            use_zoompan=use_zoompan,
+            use_progress_bar=use_progress_bar,
+            use_box_style=use_box_style,
         )
         command = self._build_render_command(
             asset_path=asset_path,
@@ -222,44 +227,74 @@ class RenderWorker:
         caption_path: Path,
         width: int,
         height: int,
+        video_duration_seconds: float,
         subtitle_font_size: int,
         subtitle_margin_v: int,
         safe_margin_x: int,
         add_overlay: bool,
+        use_zoompan: bool,
+        use_progress_bar: bool,
+        use_box_style: bool,
     ) -> str:
-        video_chain = (
-            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
-        )
+        if use_zoompan:
+            video_chain = (
+                f"[0:v]zoompan=z='min(1.10,1+0.00045*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"d=1:s={width}x{height}:fps=30"
+            )
+        else:
+            video_chain = (
+                f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            )
         if add_overlay:
             video_chain += ",format=rgba[bg];"
-            video_chain += f"color=c=black@0.32:s={width}x{height}:d=1[overlay];"
+            overlay_opacity = "0.40" if use_zoompan else "0.32"
+            video_chain += f"color=c=black@{overlay_opacity}:s={width}x{height}:d=1[overlay];"
             video_chain += "[bg][overlay]overlay=format=auto,format=yuv420p"
         else:
             video_chain += ",format=yuv420p"
 
+        if use_progress_bar:
+            progress_width = f"if(lte(t\\,{video_duration_seconds:.3f})\\,{width}*t/{video_duration_seconds:.3f}\\,{width})"
+            video_chain += f",drawbox=x=0:y=0:w={width}:h=18:color=black@0.10:t=fill"
+            video_chain += f",drawbox=x=0:y=0:w='{progress_width}':h=8:color=0x22c55e@0.92:t=fill"
+
+        if use_box_style:
+            subtitles_style = (
+                "FontName=Arial,FontSize="
+                f"{subtitle_font_size},Alignment=2,Outline=2,BorderStyle=3,BackColour=&HAA101418,"
+                f"PrimaryColour=&H00FFFFFF,Bold=1,Shadow=0,MarginV={subtitle_margin_v},MarginL={safe_margin_x},"
+                f"MarginR={safe_margin_x}"
+            )
+        else:
+            subtitles_style = (
+                "FontName=Arial,FontSize="
+                f"{subtitle_font_size},Alignment=2,Outline=2,Shadow=0,MarginV={subtitle_margin_v},"
+                f"MarginL={safe_margin_x},MarginR={safe_margin_x}"
+            )
         return (
             f"{video_chain},"
             f"subtitles='{escape_ffmpeg_path(caption_path)}':"
-            f"force_style='FontName=Arial,FontSize={subtitle_font_size},Alignment=2,Outline=2,Shadow=0,"
-            f"MarginV={subtitle_margin_v},MarginL={safe_margin_x},MarginR={safe_margin_x}'"
+            f"force_style='{subtitles_style}'"
             "[v]"
         )
 
-    def _visual_template_params(self, *, template: str, width: int, height: int) -> tuple[int, int, bool]:
+    def _visual_template_params(self, *, template: str, width: int, height: int) -> tuple[int, int, bool, bool, bool, bool]:
         base_font_size = 28 if width <= 720 else 34
         base_margin_v = max(120, height // 9)
         if template == "dark_overlay":
-            return base_font_size + 2, base_margin_v + 8, True
+            return base_font_size + 2, base_margin_v + 8, True, False, False, False
         if template == "big_captions":
-            return base_font_size + 10, base_margin_v + 18, False
-        return base_font_size, base_margin_v, False
+            return base_font_size + 10, base_margin_v + 18, False, False, False, True
+        if template == "viral_reels":
+            return 26, max(72, height // 20), True, True, True, True
+        return base_font_size, base_margin_v, False, False, False, False
 
     def _normalize_visual_template(self, value: str) -> str:
         template = value.strip().lower()
         if template not in _VISUAL_TEMPLATES:
             raise ValueError(
-                "Unknown visual template. Allowed values: default, dark_overlay, big_captions"
+                "Unknown visual template. Allowed values: default, dark_overlay, big_captions, viral_reels"
             )
         return template
 
